@@ -1,0 +1,153 @@
+"""End-to-end test against the REAL base VM.
+
+Starts the server exactly as an MCP client would (stdio, JSON-RPC) and exercises all
+seven tools. Needs the VMSANDBOX_* environment variables (see README) and takes about
+a minute. Run:
+
+    python scripts/e2e.py
+
+Exits 0 on success. Any sandbox it creates is destroyed, also on failure.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REQUIRED = [
+    "VMSANDBOX_BASE_VMX", "VMSANDBOX_SNAPSHOT", "VMSANDBOX_CLONES_DIR",
+    "VMSANDBOX_TRANSFER_DIR", "VMSANDBOX_GUEST_USER", "VMSANDBOX_GUEST_PASSWORD",
+]
+
+
+class Client:
+    def __init__(self) -> None:
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "vmware_sandbox_mcp.server"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+        )
+        self.next_id = 0
+        self.request("initialize", {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "e2e", "version": "0"},
+        })
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def send(self, message: dict) -> None:
+        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.flush()
+
+    def request(self, method: str, params: dict | None = None) -> dict:
+        self.next_id += 1
+        self.send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params or {}})
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError("server closed the connection")
+            reply = json.loads(line)
+            if reply.get("id") == self.next_id:
+                if "error" in reply:
+                    raise RuntimeError(f"{method} failed: {reply['error']}")
+                return reply["result"]
+
+    def tool(self, name: str, **arguments) -> dict:
+        return self.request("tools/call", {"name": name, "arguments": arguments})
+
+    def close(self) -> None:
+        self.proc.stdin.close()
+        self.proc.wait(timeout=30)
+
+
+def text(result: dict) -> str:
+    return "".join(c.get("text", "") for c in result["content"] if c["type"] == "text")
+
+
+def check(label: str, condition: bool, detail: object = "") -> None:
+    print(f"  [{'ok' if condition else 'FAIL'}] {label}" + (f"  ({detail})" if detail and not condition else ""))
+    if not condition:
+        raise AssertionError(label)
+
+
+def main() -> int:
+    missing = [name for name in REQUIRED if not os.environ.get(name)]
+    if missing:
+        print("Missing environment variables:", ", ".join(missing))
+        return 2
+    transfer = Path(os.environ["VMSANDBOX_TRANSFER_DIR"])
+    transfer.mkdir(parents=True, exist_ok=True)
+    (transfer / "e2e-in.txt").write_text("hello from the host\n", encoding="utf-8")
+
+    client = Client()
+    sandbox_id = None
+    try:
+        names = [t["name"] for t in client.request("tools/list")["tools"]]
+        check("server exposes exactly the 7 tools", sorted(names) == sorted([
+            "sandbox_create", "sandbox_run", "sandbox_copy_in", "sandbox_copy_out",
+            "sandbox_screenshot", "sandbox_destroy", "sandbox_list",
+        ]), names)
+
+        created = client.tool("sandbox_create")
+        check("sandbox_create succeeds", not created.get("isError"), text(created))
+        sandbox_id = text(created).strip()
+        print(f"  sandbox: {sandbox_id}")
+
+        listed = client.tool("sandbox_list")["structuredContent"]["result"]
+        check("sandbox_list shows it with network none",
+              [(s["sandbox_id"], s["network"]) for s in listed if s["sandbox_id"] == sandbox_id]
+              == [(sandbox_id, "none")], listed)
+
+        run = client.tool("sandbox_run", sandbox_id=sandbox_id,
+                          command="echo out; echo err >&2; exit 3", timeout_seconds=30)["structuredContent"]
+        check("sandbox_run returns stdout, stderr, exit code",
+              (run["stdout"], run["stderr"], run["exit_code"]) == ("out\n", "err\n", 3), run)
+
+        slow = client.tool("sandbox_run", sandbox_id=sandbox_id, command="sleep 60", timeout_seconds=2)["structuredContent"]
+        check("sandbox_run enforces the timeout", slow["timed_out"], slow)
+
+        offline = client.tool("sandbox_run", sandbox_id=sandbox_id,
+                              command="ip -o link | grep -vc LOOPBACK", timeout_seconds=30)["structuredContent"]
+        check("network 'none' means no network adapter", offline["stdout"].strip() == "0", offline)
+
+        copied = client.tool("sandbox_copy_in", sandbox_id=sandbox_id, host_path="e2e-in.txt", guest_path="/tmp/e2e-in.txt")
+        check("sandbox_copy_in succeeds", not copied.get("isError"), text(copied))
+        client.tool("sandbox_run", sandbox_id=sandbox_id,
+                    command="tr a-z A-Z < /tmp/e2e-in.txt > /tmp/e2e-out.txt", timeout_seconds=30)
+        out = client.tool("sandbox_copy_out", sandbox_id=sandbox_id, guest_path="/tmp/e2e-out.txt", host_path="e2e-out.txt")
+        check("sandbox_copy_out succeeds", not out.get("isError"), text(out))
+        check("file made the round trip",
+              (transfer / "e2e-out.txt").read_text(encoding="utf-8") == "HELLO FROM THE HOST\n")
+
+        escape = client.tool("sandbox_copy_out", sandbox_id=sandbox_id, guest_path="/etc/hostname", host_path="../e2e-escape.txt")
+        check("path traversal out of the transfer folder is rejected",
+              bool(escape.get("isError")) and not (transfer.parent / "e2e-escape.txt").exists(), text(escape))
+
+        shot = client.tool("sandbox_screenshot", sandbox_id=sandbox_id)
+        images = [c for c in shot["content"] if c["type"] == "image"]
+        check("sandbox_screenshot returns a PNG",
+              len(images) == 1 and base64.b64decode(images[0]["data"]).startswith(b"\x89PNG"))
+
+        destroyed = client.tool("sandbox_destroy", sandbox_id=sandbox_id)
+        check("sandbox_destroy succeeds", not destroyed.get("isError"), text(destroyed))
+        remaining = client.tool("sandbox_list")["structuredContent"]["result"]
+        check("sandbox is gone from the list", all(s["sandbox_id"] != sandbox_id for s in remaining), remaining)
+        check("sandbox folder is deleted", not (Path(os.environ["VMSANDBOX_CLONES_DIR"]) / sandbox_id).exists())
+        sandbox_id = None
+        print("PASS")
+        return 0
+    except AssertionError:
+        print("FAIL")
+        return 1
+    finally:
+        if sandbox_id:
+            client.tool("sandbox_destroy", sandbox_id=sandbox_id)
+        client.close()
+        for name in ("e2e-in.txt", "e2e-out.txt"):
+            (transfer / name).unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

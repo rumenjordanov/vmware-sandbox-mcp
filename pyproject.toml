@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vmware-sandbox-mcp"
+version = "0.1.0"
+description = "MCP server that gives an AI agent a disposable computer, backed by VMware Workstation."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["mcp>=2,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+vmware-sandbox-mcp = "vmware_sandbox_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vmware_sandbox_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
