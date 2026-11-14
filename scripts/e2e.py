@@ -1,7 +1,8 @@
 """End-to-end test against the REAL base VM.
 
 Starts the server exactly as an MCP client would (stdio, JSON-RPC), exercises all
-ten tools and reads the audit log back. Needs the VMSANDBOX_* environment variables (see README) and takes about
+thirteen tools and reads the audit log back. The keyboard and mouse part runs when
+VMSANDBOX_REMOTE_INPUT is on, the web part when VMSANDBOX_WEB_VNET is set. Needs the VMSANDBOX_* environment variables (see README) and takes about
 a minute. Run:
 
     python scripts/e2e.py
@@ -16,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -86,10 +88,11 @@ def main() -> int:
     sandbox_id = None
     try:
         names = [t["name"] for t in client.request("tools/list")["tools"]]
-        check("server exposes exactly the 10 tools", sorted(names) == sorted([
+        check("server exposes exactly the 13 tools", sorted(names) == sorted([
             "sandbox_create", "sandbox_run", "sandbox_copy_in", "sandbox_copy_out",
             "sandbox_screenshot", "sandbox_destroy", "sandbox_list",
             "sandbox_start", "sandbox_check", "sandbox_stop",
+            "sandbox_click", "sandbox_type", "sandbox_key",
         ]), names)
 
         created = client.tool("sandbox_create")
@@ -185,6 +188,52 @@ def main() -> int:
         check("audit log records the refused path traversal",
               mine[7]["ok"] is False and mine[7]["host_path"] == "../e2e-escape.txt", mine[7])
         sandbox_id = None
+
+        if os.environ.get("VMSANDBOX_REMOTE_INPUT", "").strip().lower() in ("1", "true", "yes", "on"):
+            # Written for the tested base VM: Debian 13 with GNOME at 1280x800, where the
+            # login screen shows the user in the middle. Adjust the click for another image.
+            def tool_ok(name, **arguments):
+                reply = client.tool(name, sandbox_id=sandbox_id, **arguments)
+                check(f"{name}({', '.join(str(v)[:24] for v in arguments.values())!r}) succeeds",
+                      not reply.get("isError"), text(reply))
+
+            created = client.tool("sandbox_create")
+            sandbox_id = text(created).strip()
+            time.sleep(40)                                   # the graphical login screen appears
+            tool_ok("sandbox_click", x=640, y=348)           # pick the user
+            time.sleep(3)
+            tool_ok("sandbox_type", text=os.environ["VMSANDBOX_GUEST_PASSWORD"] + "\n")
+            time.sleep(25)                                   # the desktop loads
+            tool_ok("sandbox_key", keys="Escape")
+            tool_ok("sandbox_key", keys="super")             # application search
+            time.sleep(2)
+            tool_ok("sandbox_type", text="terminal")
+            time.sleep(2)
+            tool_ok("sandbox_key", keys="Return")
+            time.sleep(8)
+            wanted = "Hello, World! ~@#$%^&*()_+{}|:<>? aZ09 -=[];',./"
+            tool_ok("sandbox_type", text=f'echo "{wanted}" > /tmp/typed.txt\n')
+            time.sleep(3)
+            typed = client.tool("sandbox_run", sandbox_id=sandbox_id, command="cat /tmp/typed.txt",
+                                timeout_seconds=30)["structuredContent"]
+            check("typed text, capitals and symbols arrive exactly", typed["stdout"] == wanted + "\n", typed)
+            tool_ok("sandbox_type", text="sleep 300\n")
+            time.sleep(1)
+            tool_ok("sandbox_key", keys="ctrl+c")
+            tool_ok("sandbox_type", text="echo interrupted > /tmp/ctrlc.txt\n")
+            time.sleep(3)
+            ctrl = client.tool("sandbox_run", sandbox_id=sandbox_id, timeout_seconds=30,
+                               command="cat /tmp/ctrlc.txt; pgrep -x sleep | wc -l")["structuredContent"]
+            check("a shortcut (ctrl+c) reaches the program", ctrl["stdout"].split() == ["interrupted", "0"], ctrl)
+            outside = client.tool("sandbox_click", sandbox_id=sandbox_id, x=5000, y=10)
+            check("a click outside the screen is refused", bool(outside.get("isError")), text(outside))
+            log_text = audit_path.read_text(encoding="utf-8")
+            check("the guest password typed at the login screen is blanked in the audit log",
+                  '"text": "[guest password]\\n"' in log_text, "")
+            client.tool("sandbox_destroy", sandbox_id=sandbox_id)
+            sandbox_id = None
+        else:
+            print("  (keyboard and mouse not switched on; skipping their checks)")
 
         if os.environ.get("VMSANDBOX_WEB_VNET"):
             created = client.tool("sandbox_create", network="web")

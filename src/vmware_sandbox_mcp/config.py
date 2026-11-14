@@ -41,6 +41,8 @@ class Config:
     web_proxy_host: str | None = None
     web_proxy_port: int = 3128
     web_ports: tuple[int, ...] = (80, 443)
+    # Keyboard and mouse tools: gives every sandbox a password-protected remote display on 127.0.0.1.
+    remote_input: bool = False
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -70,6 +72,15 @@ def _find_vmrun(env: Mapping[str, str]) -> Path:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
     raise ConfigError("vmrun not found. Set VMSANDBOX_VMRUN_PATH to the full path of vmrun.exe.")
+
+
+def _switch(env: Mapping[str, str], name: str) -> bool:
+    raw = env.get(name, "").strip().lower()
+    if raw in ("", "0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    raise ConfigError(f"{name} must be on or off, got {raw!r}.")
 
 
 def vnet_problem(vnet: str) -> str | None:
@@ -188,5 +199,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         max_age_minutes=_positive_int(env, "VMSANDBOX_MAX_AGE_MINUTES", 120),
         boot_timeout_seconds=_positive_int(env, "VMSANDBOX_BOOT_TIMEOUT_SECONDS", 180),
         audit_log=audit_log,
+        remote_input=_switch(env, "VMSANDBOX_REMOTE_INPUT"),
         **_web_settings(env),  # type: ignore[arg-type]
     )

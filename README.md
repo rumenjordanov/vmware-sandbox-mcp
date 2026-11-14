@@ -28,6 +28,9 @@ The agent then:
 | `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
 | `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
 | `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
+| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. Needs keyboard and mouse switched on. |
+| `sandbox_type(sandbox_id, text)` | Types text on the sandbox's keyboard. |
+| `sandbox_key(sandbox_id, keys)` | Presses a key or shortcut, such as `Return` or `ctrl+c`. |
 | `sandbox_destroy(sandbox_id)` | Powers off and deletes the sandbox. |
 | `sandbox_list()` | Active sandboxes with age and network mode. |
 
@@ -99,6 +102,7 @@ All configuration is through environment variables. The server refuses to start 
 | `VMSANDBOX_BOOT_TIMEOUT_SECONDS` | no | `180` | How long `sandbox_create` waits for the guest to become ready. |
 | `VMSANDBOX_VMRUN_PATH` | no | auto-detected | Full path of `vmrun` if it is not in the standard location. |
 | `VMSANDBOX_AUDIT_LOG` | no | `audit.jsonl` in the clones folder | File the audit log is appended to. |
+| `VMSANDBOX_REMOTE_INPUT` | no | off | `on` enables the keyboard and mouse tools (see [Keyboard and mouse](#keyboard-and-mouse)). |
 | `VMSANDBOX_WEB_VNET` | no | | Dedicated host-only VMware network for `web` sandboxes, for example `VMnet9`. Setting it (together with the next one) switches `web` mode on. |
 | `VMSANDBOX_WEB_PROXY_HOST` | no | | This computer's IP address on that network. The proxy listens only there. |
 | `VMSANDBOX_WEB_PROXY_PORT` | no | `3128` | Port the proxy listens on. |
@@ -128,9 +132,23 @@ Setup, once, with administrator rights:
 
 The server refuses to start in `web` mode on VMnet0 (bridged), VMnet1 or VMnet8 (NAT), or on any network that VMware records as NAT.
 
+### Keyboard and mouse
+
+Off by default. With `VMSANDBOX_REMOTE_INPUT=on`, the agent can operate graphical programs: it looks with `sandbox_screenshot` and acts with `sandbox_click`, `sandbox_type` and `sandbox_key`. No change to the base VM and no admin rights are needed.
+
+How it works: every sandbox created while the setting is on gets VMware's built-in remote display (VNC), bound to `127.0.0.1`, on its own random port, with its own random password. The server connects to it for each click or keystroke. The port and password are kept in the server's state file in the clones folder, never shown to the agent, and gone when the sandbox is destroyed. When the setting is off, clones have the remote display explicitly disabled, even if the base VM has one configured.
+
+What to know:
+
+- **US keyboard layout is assumed** in the sandbox. Only plain English keyboard characters can be typed.
+- **A graphical guest starts at its login screen.** The agent does not know the guest password, so either set up automatic login in the base VM, or log in yourself. Whatever is typed is written to the audit log, except the guest password, which is blanked.
+- **Shortcuts with Ctrl+Alt** (such as switching to a text console with Ctrl+Alt+F3) did not reach the guest in testing.
+- **No scrolling or dragging yet**, and no clipboard.
+- `vmware-sandbox-mcp doctor` checks that input works and that the remote display is not reachable through any of your computer's network addresses.
+
 ### Audit log
 
-Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, background commands started, checked and stopped, files copied, screenshots taken, and every request a `web` sandbox makes through the proxy (destination, address, allowed or refused). Refused and failed operations are recorded too, with the reason. Example:
+Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, background commands started, checked and stopped, files copied, screenshots taken, clicks, typed text and key presses, and every request a `web` sandbox makes through the proxy (destination, address, allowed or refused). Refused and failed operations are recorded too, with the reason. Example:
 
 ```json
 {"time": "2026-11-14T12:08:19Z", "event": "run", "sandbox_id": "sbx-cbe8c2a2", "command": "echo out; echo err >&2; exit 3", "timeout_seconds": 30, "ok": true, "seconds": 4.1, "exit_code": 3, "timed_out": false, "stdout_bytes": 4, "stderr_bytes": 4}
@@ -217,6 +235,7 @@ What the server enforces, in code and covered by tests:
 - **One transfer folder.** `copy_in` and `copy_out` only accept host paths that resolve inside the transfer folder. Traversal, absolute paths elsewhere, and links pointing out of the folder are rejected.
 - **Folders are unpacked defensively.** A folder travels as one archive. Coming out of a sandbox, that archive is treated as hostile: only plain files and folders are created, each checked to land inside the target folder. Links, devices, absolute or `..` names, and names Windows cannot store are left out, and the reply says how many. Going in, a host folder that contains a link or junction is refused, so a link cannot pull files from outside the transfer folder into a sandbox.
 - **No host shell.** `vmrun` is called with an argument list, never through a shell. A command for the sandbox travels as file content, never as a command-line argument.
+- **Keyboard and mouse stay on your computer.** The remote display used for input is off unless you enable it. When on, it listens on `127.0.0.1` only, so it is not reachable from your network or from any sandbox, and it requires a per-sandbox random password. The server refuses a display that does not ask for a password.
 - **Limits.** Every command has a timeout (1 to 3600 seconds) enforced inside the guest, with a second host-side timeout. Output is cut at 1 MB per stream. The number of sandboxes is capped. Sandboxes past the maximum age are destroyed, and sandboxes left behind by a crash or reboot are removed at startup.
 
 ### Limits of this model, stated honestly
@@ -237,13 +256,14 @@ What the server enforces, in code and covered by tests:
 - **Races.** Path checks happen just before the copy. Another program on the host changing links inside the transfer folder at exactly that moment could defeat them.
 - **Folder copies are not exact mirrors.** Files copied in lose the executable flag (Windows has none). Copied out, links, special files (pipes, devices) and names not valid on Windows (containing `:` `?` `*` or a backslash, ending in a dot, or reserved names like `CON`) are left out. Two names differing only in case end up as one file. The limit is 100,000 files or 4 GB per copy.
 - **Background commands are a convenience, not a limit.** The cap of 8 per sandbox is counted inside the sandbox, so code running there can get around it, just as any command can start more processes with `&`. Their output is kept on the sandbox's own disk without a size limit; a check returns the newest 1 MB. A program that detaches itself into its own session survives `sandbox_stop`, until the sandbox is destroyed.
-- **Screenshots are view-only.** There is no keyboard or mouse tool, so a graphical guest usually shows its login screen.
+- **The remote display is protected against the network, not against your own account.** With keyboard and mouse on, any program running as you on this computer could connect to a sandbox's display if it obtained the password (VNC passwords are 8 characters and the protocol is old). Such a program could already control your VMs through VMware's own tools. The password is also stored in plain text in the sandbox's `.vmx` and in the state file, both in the clones folder.
+- **Keyboard and mouse are slow and blind.** Each action is a separate step and the agent only sees what it asks a screenshot for. Prefer `sandbox_run` whenever a command can do the job.
 
 ### Future improvements
 
 - Isolating `web` sandboxes from each other.
 - An allowlist of sites for `web` mode.
-- Keyboard and mouse input.
+- Scrolling, dragging and clipboard for the keyboard and mouse tools.
 - Publishing to PyPI.
 
 ## Development

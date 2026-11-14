@@ -158,3 +158,25 @@ def test_unsafe_locations_are_refused(env, settings, where):
     }[where])
     with pytest.raises(ConfigError, match="VMSANDBOX_AUDIT_LOG"):
         load_config(settings)
+
+
+def test_guest_password_is_blanked_wherever_it_would_be_written(tmp_path):
+    path = tmp_path / "a.jsonl"
+    log = AuditLog(path, redact=('pa"ss\\word', "", "hunter2"))
+    log.record("type", text='login: pa"ss\\word then hunter2', keys=3)
+    log.record("run", command="echo hunter2 | sudo -S true")
+    text = path.read_text(encoding="utf-8")
+    assert "hunter2" not in text and 'pa\\"ss' not in text
+    import json as _json
+    entries = [_json.loads(line) for line in text.splitlines()]  # still valid JSON
+    assert entries[0]["text"] == "login: [guest password] then [guest password]"
+    assert entries[1]["command"] == "echo [guest password] | sudo -S true"
+
+
+def test_blanking_never_touches_numbers(tmp_path):
+    path = tmp_path / "a.jsonl"
+    AuditLog(path, redact=("12345",)).record("copy_in", bytes=12345, seconds=1.2345, host_path="f12345.txt", ok=True)
+    import json as _json
+    entry = _json.loads(path.read_text(encoding="utf-8"))
+    assert entry["bytes"] == 12345 and entry["seconds"] == 1.2345
+    assert entry["host_path"] == "f[guest password].txt"

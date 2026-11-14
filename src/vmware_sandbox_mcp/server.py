@@ -46,7 +46,12 @@ def build_manager() -> SandboxManager:
         config.guest_user,
         config.guest_password,
     )
-    return SandboxManager(config, vmrun, StateStore(config.clones_dir), audit=AuditLog(config.audit_log))
+    return SandboxManager(
+        config,
+        vmrun,
+        StateStore(config.clones_dir),
+        audit=AuditLog(config.audit_log, redact=(config.guest_password,)),
+    )
 
 
 async def _call(fn: Callable[..., T], *args: Any) -> T:
@@ -208,10 +213,59 @@ async def sandbox_screenshot(sandbox_id: str) -> Image:
     screen, or to check what the sandbox is displaying when a command seems stuck. For the
     output of commands, sandbox_run is faster and more precise.
 
-    Returns a PNG image of the sandbox's display at this moment.
+    Returns a PNG image of the sandbox's display at this moment. Positions in this image,
+    counted in pixels from its top-left corner, are what sandbox_click expects.
     """
     data = await _call(lambda: _manager.screenshot(sandbox_id))  # type: ignore[union-attr]
     return Image(data=data, format="png")
+
+
+@mcp.tool()
+async def sandbox_click(
+    sandbox_id: str, x: int, y: int, button: Literal["left", "right", "middle"] = "left", double: bool = False
+) -> str:
+    """Click the mouse at a position on a sandbox's screen.
+
+    Use this to operate graphical programs: press buttons, open menus, focus a text field
+    before typing. First take a sandbox_screenshot, find the thing to click, and pass its
+    position: x pixels from the left edge and y pixels from the top edge of that image.
+    Take another screenshot afterwards to see the result; screens need a moment to react.
+
+    button: "left" (default), "right" or "middle". double: true for a double-click.
+    Only works if the user has switched keyboard and mouse input on; the error says so
+    otherwise. For anything that can be done with a command, sandbox_run is faster and
+    more reliable.
+    """
+    await _call(lambda: _manager.click(sandbox_id, x, y, button, double))  # type: ignore[union-attr]
+    return f"{'Double-clicked' if double else 'Clicked'} the {button} button at ({x}, {y})."
+
+
+@mcp.tool()
+async def sandbox_type(sandbox_id: str, text: str) -> str:
+    """Type text on a sandbox's keyboard, as if a person typed it.
+
+    The text goes to whatever has keyboard focus on the sandbox's screen, so click the
+    right field first (sandbox_click) and check with sandbox_screenshot. A line break in
+    the text presses Enter, a tab presses Tab. Only plain English keyboard characters can
+    be typed (letters, digits, common symbols), at most 10,000 at a time. For shortcuts
+    and special keys use sandbox_key.
+    """
+    count = await _call(lambda: _manager.type_text(sandbox_id, text))  # type: ignore[union-attr]
+    return f"Typed {count} keys."
+
+
+@mcp.tool()
+async def sandbox_key(sandbox_id: str, keys: str) -> str:
+    """Press a single key or a keyboard shortcut on a sandbox's keyboard.
+
+    keys: a key name, or modifiers and a key joined with "+". Examples: "Return",
+    "Escape", "Tab", "ctrl+c", "ctrl+alt+t", "alt+F4", "shift+Tab", "super" (opens the
+    desktop's application search). Modifiers: ctrl, alt, shift, super. Key names: Return,
+    Escape, Tab, Backspace, Delete, Space, Up, Down, Left, Right, Home, End, PageUp,
+    PageDown, Insert, F1 to F12, or any single character.
+    """
+    await _call(lambda: _manager.press_keys(sandbox_id, keys))  # type: ignore[union-attr]
+    return f"Pressed {keys}."
 
 
 @mcp.tool()

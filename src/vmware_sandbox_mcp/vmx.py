@@ -11,7 +11,9 @@ from .paths import resolve, same_path
 NETWORK_MODES = ("none", "nat", "web")
 
 # Whole device families removed from every clone.
-_DROP_PREFIXES = ("ethernet", "sharedfolder", "usb", "ehci", "sound", "serial", "parallel", "floppy")
+_DROP_PREFIXES = (
+    "ethernet", "sharedfolder", "usb", "ehci", "sound", "serial", "parallel", "floppy", "remotedisplay",
+)
 
 _ISOLATION = {
     # shared folders off
@@ -55,7 +57,33 @@ def _web(vnet: str | None) -> dict[str, str]:
 _LINE = re.compile(r'^\s*([^=\s#]+)\s*=\s*"(.*)"\s*$')
 
 
-def harden_vmx_text(text: str, network: str, vnet: str | None = None) -> str:
+_DISPLAY_PASSWORD = re.compile(r"^[A-Za-z0-9]{8}\Z")
+
+
+def _remote_display(display: tuple[int, str] | None) -> dict[str, str]:
+    """Remote display (keyboard and mouse) settings. Off unless a port and password are given.
+
+    Any remote display configured in the base VM is dropped first, so a clone never
+    inherits an open or password-less display.
+    """
+    if display is None:
+        return {"RemoteDisplay.vnc.enabled": "FALSE"}
+    port, password = display
+    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+        raise ValueError(f"bad remote display port {port!r}")
+    if not isinstance(password, str) or not _DISPLAY_PASSWORD.match(password):
+        raise ValueError("the remote display password must be 8 letters or digits")
+    return {
+        "RemoteDisplay.vnc.enabled": "TRUE",
+        "RemoteDisplay.vnc.ip": "127.0.0.1",  # this computer only, never the network
+        "RemoteDisplay.vnc.port": str(port),
+        "RemoteDisplay.vnc.password": password,
+    }
+
+
+def harden_vmx_text(
+    text: str, network: str, vnet: str | None = None, display: tuple[int, str] | None = None
+) -> str:
     if network not in NETWORK_MODES:
         raise ValueError(f"network must be one of {NETWORK_MODES}, got {network!r}")
 
@@ -73,7 +101,7 @@ def harden_vmx_text(text: str, network: str, vnet: str | None = None) -> str:
     }
 
     adapter = _NAT if network == "nat" else _web(vnet) if network == "web" else _NO_NETWORK
-    settings = {**_ISOLATION, **adapter}
+    settings = {**_ISOLATION, **adapter, **_remote_display(display)}
     overridden = {key.lower() for key in settings}
 
     kept: list[str] = []
@@ -93,9 +121,10 @@ def harden_vmx(
     clones_dir: str | os.PathLike[str],
     network: str,
     vnet: str | None = None,
+    display: tuple[int, str] | None = None,
 ) -> None:
     path = resolve(vmx)
     if not same_path(path.parent.parent, clones_dir) or path.suffix.lower() != ".vmx":
         raise PermissionError(f"Refused to edit {vmx}: not a sandbox .vmx inside {clones_dir}.")
     text = Path(path).read_text(encoding="utf-8")
-    Path(path).write_text(harden_vmx_text(text, network, vnet), encoding="utf-8")
+    Path(path).write_text(harden_vmx_text(text, network, vnet, display), encoding="utf-8")

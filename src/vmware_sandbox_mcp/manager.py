@@ -8,17 +8,21 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
+import string
 import tarfile
 import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .audit import AuditLog
 from .config import Config
 from .folders import FolderError, pack_folder, unpack_folder
+from . import input as remote_input
 from . import jobs
+from .input import InputError, RfbClient
 from .jobs import JobError, JobStatus
 from .paths import TransferPathError, resolve_in_transfer, same_path
 from .state import StateStore
@@ -27,6 +31,7 @@ from .vmrun import VmrunClient, VmrunError, VmrunTimeout
 from .vmx import NETWORK_MODES, harden_vmx
 
 log = logging.getLogger("vmware_sandbox_mcp")
+T = TypeVar("T")
 
 MARKER = ".vmware-sandbox-mcp"
 MAX_RUN_TIMEOUT_SECONDS = 3600
@@ -59,8 +64,12 @@ class SandboxManager:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         audit: AuditLog | None = None,
+        input_connect: Callable[[int, str], RfbClient] = RfbClient,
+        port_picker: Callable[[set[int]], int] | None = None,
     ) -> None:
         self._audit = audit or AuditLog(None)
+        self._input_connect = input_connect
+        self._port_picker = port_picker or self._free_port
         self._config = config
         self._vmrun = vmrun
         self._store = store
@@ -209,6 +218,35 @@ class SandboxManager:
             lambda outcome: {"outcome": outcome},
         )
 
+    def click(self, sandbox_id: str, x: int, y: int, button: str = "left", double: bool = False) -> None:
+        """Click on the sandbox's screen at a pixel position."""
+        self._audited(
+            "click",
+            {"sandbox_id": sandbox_id, "x": x, "y": y, "button": button, "double": double},
+            lambda: self._with_input(sandbox_id, lambda c: remote_input.click(c, x, y, button, double, self._sleep)),
+        )
+
+    def type_text(self, sandbox_id: str, text: str) -> int:
+        """Type text on the sandbox's keyboard. Returns the number of keys typed."""
+        return self._audited(
+            "type",
+            {"sandbox_id": sandbox_id, "text": text},
+            lambda: self._with_input(sandbox_id, lambda c: remote_input.type_text(c, text, self._sleep)),
+            lambda count: {"keys": count},
+        )
+
+    def press_keys(self, sandbox_id: str, keys: str) -> None:
+        """Press one key or a shortcut such as 'ctrl+alt+t'."""
+        self._audited(
+            "key",
+            {"sandbox_id": sandbox_id, "keys": keys},
+            lambda: self._with_input(sandbox_id, lambda c: remote_input.press_keys(c, keys, self._sleep)),
+        )
+
+    def remote_display_port(self, sandbox_id: str) -> int | None:
+        """The local port of a sandbox's remote display, or None if it has none."""
+        return (self._require(sandbox_id).get("input") or {}).get("port")
+
     def copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> Transfer:
         """Copy a file or a folder from the transfer folder into the sandbox."""
         return self._audited(
@@ -263,11 +301,18 @@ class SandboxManager:
                 "created_at": self._clock(),
                 "status": "creating",
             }
+            display = None
+            if self._config.remote_input:
+                taken = {(r.get("input") or {}).get("port") for r in sandboxes.values()}
+                password = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+                display = (self._port_picker(taken), password)
+                # Kept in the state file in the clones folder, which the agent cannot read.
+                sandboxes[sandbox_id]["input"] = {"port": display[0], "password": display[1]}
         try:
             folder.mkdir()
             (folder / MARKER).write_text("created by vmware-sandbox-mcp\n", encoding="utf-8")
             self._vmrun.clone(vmx, self._config.snapshot, sandbox_id)
-            harden_vmx(vmx, self._config.clones_dir, network, self._config.web_vnet)
+            harden_vmx(vmx, self._config.clones_dir, network, self._config.web_vnet, display)
             self._vmrun.start(vmx)
             self._wait_ready(vmx)
         except Exception as exc:
@@ -339,6 +384,45 @@ class SandboxManager:
         elapsed = self._clock() - started
         timed_out = result.exit_code == 124 or (result.exit_code == 137 and elapsed >= timeout_seconds)
         return dataclasses.replace(result, timed_out=timed_out)
+
+    # ---- keyboard and mouse ----------------------------------------------
+
+    @staticmethod
+    def _free_port(taken: set[int]) -> int:
+        for _ in range(300):
+            port = 15900 + secrets.randbelow(1000)
+            if port in taken:
+                continue
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                try:
+                    probe.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            return port
+        raise SandboxError("No free local port for the sandbox's keyboard and mouse.")
+
+    def _with_input(self, sandbox_id: str, action: Callable[[RfbClient], T]) -> T:
+        record = self._require(sandbox_id)
+        if record.get("status") != "ready":
+            raise SandboxError(f"Sandbox {sandbox_id} is not ready.")
+        display = record.get("input")
+        if not display:
+            raise SandboxError(
+                "Keyboard and mouse input is not available for this sandbox. The user has to switch it on "
+                "(VMSANDBOX_REMOTE_INPUT) and the sandbox has to be created after that."
+            )
+        try:
+            client = self._input_connect(display["port"], display["password"])
+        except InputError as exc:
+            raise SandboxError(str(exc)) from None
+        try:
+            return action(client)
+        except InputError as exc:
+            raise SandboxError(str(exc)) from None
+        except OSError as exc:
+            raise SandboxError(f"Lost the connection to the sandbox's keyboard and mouse ({exc}).") from None
+        finally:
+            client.close()
 
     # ---- background commands ---------------------------------------------
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import re
 import secrets
+import socket
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -17,7 +18,7 @@ from pathlib import Path
 from .audit import AuditLog
 from .config import Config, ConfigError, load_config
 from .manager import SandboxError, SandboxManager
-from .proxy import WebProxy
+from .proxy import WebProxy, host_addresses
 from .state import StateStore
 from .vmrun import Runner, VmrunClient, VmrunError, subprocess_runner
 
@@ -74,7 +75,9 @@ class Doctor:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         proxy_factory: Callable[[Config], WebProxy] | None = None,
+        manager_options: dict | None = None,
     ) -> None:
+        self._manager_options = manager_options or {}
         self._proxy_factory = proxy_factory or (
             lambda config: WebProxy(
                 config.web_proxy_host or "",
@@ -218,7 +221,8 @@ class Doctor:
             StateStore(config.clones_dir),
             clock=self._clock,
             sleep=self._sleep,
-            audit=AuditLog(config.audit_log, self._clock),
+            audit=AuditLog(config.audit_log, self._clock, redact=(config.guest_password,)),
+            **self._manager_options,
         )
 
     def _check_web(self, config: Config, vmrun: VmrunClient) -> None:
@@ -318,6 +322,35 @@ class Doctor:
                 f"{config.web_vnet} must be a host-only network without NAT.",
             )
 
+    def _check_input(self, manager: SandboxManager, sandbox_id: str) -> None:
+        try:
+            manager.press_keys(sandbox_id, "shift")
+        except SandboxError as exc:
+            self._report(FAIL, "Keyboard and mouse", str(exc))
+            return
+        self._report(OK, "Keyboard and mouse", "the sandbox accepts input")
+        port = manager.remote_display_port(sandbox_id)
+        exposed = [str(address) for address in sorted(host_addresses(), key=str) if self._reachable(str(address), port)]
+        if exposed:
+            self._report(
+                FAIL,
+                "Remote display is local only",
+                f"the sandbox's remote display is reachable at {', '.join(exposed)}",
+                "do not use VMSANDBOX_REMOTE_INPUT on this computer and report this as a bug.",
+            )
+        else:
+            self._report(OK, "Remote display is local only", "reachable from this computer only (127.0.0.1)")
+
+    @staticmethod
+    def _reachable(address: str, port: int | None) -> bool:
+        if port is None or address.startswith("127.") or address == "::1":
+            return False
+        try:
+            socket.create_connection((address, port), timeout=2).close()
+        except OSError:
+            return False
+        return True
+
     def _check_guest(self, manager: SandboxManager, sandbox_id: str, config: Config) -> None:
         try:
             result = manager.run(sandbox_id, _PROBE, 30)
@@ -334,6 +367,8 @@ class Doctor:
             self._report(FAIL, "Running commands", "the test command produced no output")
             return
         self._report(OK, "Running commands", "works")
+        if config.remote_input:
+            self._check_input(manager, sandbox_id)
         if "sudo-yes" in lines:
             self._report(OK, "Installing software", "passwordless sudo is available")
         else:
