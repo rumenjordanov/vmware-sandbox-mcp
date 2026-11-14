@@ -85,8 +85,26 @@ All configuration is through environment variables. The server refuses to start 
 | `VMSANDBOX_MAX_AGE_MINUTES` | no | `120` | Sandboxes older than this are destroyed automatically. |
 | `VMSANDBOX_BOOT_TIMEOUT_SECONDS` | no | `180` | How long `sandbox_create` waits for the guest to become ready. |
 | `VMSANDBOX_VMRUN_PATH` | no | auto-detected | Full path of `vmrun` if it is not in the standard location. |
+| `VMSANDBOX_AUDIT_LOG` | no | `audit.jsonl` in the clones folder | File the audit log is appended to. |
 
 The clones folder, the transfer folder and the base VM folder must not overlap; the server checks this at startup.
+
+### Audit log
+
+Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, files copied and screenshots taken. Refused and failed operations are recorded too, with the reason. Example:
+
+```json
+{"time": "2026-11-14T12:08:19Z", "event": "run", "sandbox_id": "sbx-cbe8c2a2", "command": "echo out; echo err >&2; exit 3", "timeout_seconds": 30, "ok": true, "seconds": 4.1, "exit_code": 3, "timed_out": false, "stdout_bytes": 4, "stderr_bytes": 4}
+```
+
+What to know about it:
+
+- **Command text is recorded in full.** If the agent runs a command containing a secret (a token in a `curl` call, say), that secret is in the log in plain text. Treat the file accordingly.
+- **Command output is not recorded**, only its size, the exit code and the duration. The guest password is never recorded.
+- **Times are UTC.**
+- **The agent cannot read or change the log.** The server refuses to start if the log is inside the transfer folder, the base VM folder or a sandbox folder.
+- **The file grows without limit.** There is no rotation; delete or archive it yourself.
+- **Logging never blocks an operation.** If the file cannot be written (disk full, for example), the server prints a warning to stderr and carries on, so a sandbox can always still be destroyed.
 
 ### Check your setup
 
@@ -96,7 +114,7 @@ With the environment variables set, run:
 vmware-sandbox-mcp doctor
 ```
 
-It checks the settings, `vmrun`, the snapshot (exists and was taken powered off) and both folders. It then creates one test sandbox, logs in, runs a command and destroys it again, which takes about a minute. Each problem is printed with what to fix, and the exit code is 0 only if nothing failed. `doctor --no-boot` skips the test sandbox.
+It checks the settings, `vmrun`, the snapshot (exists and was taken powered off), both folders and the audit log. It then creates one test sandbox, logs in, runs a command and destroys it again, which takes about a minute. Each problem is printed with what to fix, and the exit code is 0 only if nothing failed. `doctor --no-boot` skips the test sandbox.
 
 ### Claude Code
 

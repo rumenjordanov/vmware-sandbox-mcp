@@ -1,7 +1,7 @@
 """End-to-end test against the REAL base VM.
 
-Starts the server exactly as an MCP client would (stdio, JSON-RPC) and exercises all
-seven tools. Needs the VMSANDBOX_* environment variables (see README) and takes about
+Starts the server exactly as an MCP client would (stdio, JSON-RPC), exercises all
+seven tools and reads the audit log back. Needs the VMSANDBOX_* environment variables (see README) and takes about
 a minute. Run:
 
     python scripts/e2e.py
@@ -135,6 +135,19 @@ def main() -> int:
         remaining = client.tool("sandbox_list")["structuredContent"]["result"]
         check("sandbox is gone from the list", all(s["sandbox_id"] != sandbox_id for s in remaining), remaining)
         check("sandbox folder is deleted", not (Path(os.environ["VMSANDBOX_CLONES_DIR"]) / sandbox_id).exists())
+
+        audit_path = Path(os.environ.get("VMSANDBOX_AUDIT_LOG")
+                          or Path(os.environ["VMSANDBOX_CLONES_DIR"]) / "audit.jsonl")
+        entries = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        mine = [e for e in entries if e.get("sandbox_id") == sandbox_id]
+        check("audit log has one entry per operation, in order",
+              [e["event"] for e in mine] == ["create", "run", "run", "run", "copy_in", "run",
+                                             "copy_out", "copy_out", "screenshot", "destroy"],
+              [e["event"] for e in mine])
+        check("audit log records the command text and exit code",
+              (mine[1]["command"], mine[1]["exit_code"]) == ("echo out; echo err >&2; exit 3", 3), mine[1])
+        check("audit log records the refused path traversal",
+              mine[7]["ok"] is False and mine[7]["host_path"] == "../e2e-escape.txt", mine[7])
         sandbox_id = None
         print("PASS")
         return 0

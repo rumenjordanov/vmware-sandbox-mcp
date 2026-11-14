@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import tarfile
 from pathlib import Path
 
 import pytest
 
+from vmware_sandbox_mcp.audit import AuditLog
 from vmware_sandbox_mcp.config import Config
 from vmware_sandbox_mcp.manager import SandboxManager
 from vmware_sandbox_mcp.state import StateStore
@@ -178,5 +180,10 @@ def env(tmp_path: Path):
         StateStore(clones),
         clock=lambda: e.now[0],
         sleep=lambda s: e.now.__setitem__(0, e.now[0] + s),
+        audit=AuditLog(tmp_path / "audit.jsonl", clock=lambda: e.now[0]),
     )
+    e.audit_path = tmp_path / "audit.jsonl"
+    e.audit = lambda: [
+        json.loads(line) for line in e.audit_path.read_text(encoding="utf-8").splitlines()
+    ] if e.audit_path.exists() else []
     return e

@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .audit import AuditLog
 from .config import Config
 from .paths import TransferPathError, resolve_in_transfer, same_path
 from .state import StateStore
@@ -40,7 +41,9 @@ class SandboxManager:
         store: StateStore,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        audit: AuditLog | None = None,
     ) -> None:
+        self._audit = audit or AuditLog(None)
         self._config = config
         self._vmrun = vmrun
         self._store = store
@@ -115,9 +118,79 @@ class SandboxManager:
             f"The sandbox did not become ready within {self._config.boot_timeout_seconds}s."
         )
 
-    # ---- operations ------------------------------------------------------
+    # ---- public operations: each one leaves exactly one audit entry -------
+
+    def _audited(
+        self,
+        event: str,
+        fields: dict[str, Any],
+        work: Callable[[], Any],
+        outcome: Callable[[Any], dict[str, Any]] = lambda result: {},
+    ) -> Any:
+        started = self._clock()
+        try:
+            result = work()
+        except Exception as exc:
+            self._audit.record(
+                event, **fields, ok=False, seconds=round(self._clock() - started, 1), error=str(exc)
+            )
+            raise
+        self._audit.record(
+            event, **fields, ok=True, seconds=round(self._clock() - started, 1), **outcome(result)
+        )
+        return result
 
     def create(self, network: str = "none") -> str:
+        return self._audited(
+            "create", {"network": network}, lambda: self._create(network), lambda sid: {"sandbox_id": sid}
+        )
+
+    def destroy(self, sandbox_id: str) -> None:
+        self._audited("destroy", {"sandbox_id": sandbox_id}, lambda: self._destroy(sandbox_id))
+
+    def run(self, sandbox_id: str, command: str, timeout_seconds: int = 60) -> RunResult:
+        return self._audited(
+            "run",
+            {"sandbox_id": sandbox_id, "command": command, "timeout_seconds": timeout_seconds},
+            lambda: self._run(sandbox_id, command, timeout_seconds),
+            lambda r: {
+                "exit_code": r.exit_code,
+                "timed_out": r.timed_out,
+                "stdout_bytes": len(r.stdout.encode("utf-8", "replace")),
+                "stderr_bytes": len(r.stderr.encode("utf-8", "replace")),
+            },
+        )
+
+    def copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> int:
+        """Copy one file from the transfer folder into the sandbox. Returns its size."""
+        return self._audited(
+            "copy_in",
+            {"sandbox_id": sandbox_id, "host_path": host_path, "guest_path": guest_path},
+            lambda: self._copy_in(sandbox_id, host_path, guest_path),
+            lambda size: {"bytes": size},
+        )
+
+    def copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> tuple[Path, int]:
+        """Copy one file from the sandbox into the transfer folder. Returns (path, size)."""
+        return self._audited(
+            "copy_out",
+            {"sandbox_id": sandbox_id, "guest_path": guest_path, "host_path": host_path},
+            lambda: self._copy_out(sandbox_id, guest_path, host_path),
+            lambda saved: {"saved_to": str(saved[0]), "bytes": saved[1]},
+        )
+
+    def screenshot(self, sandbox_id: str) -> bytes:
+        """PNG image of the sandbox's screen."""
+        return self._audited(
+            "screenshot",
+            {"sandbox_id": sandbox_id},
+            lambda: self._screenshot(sandbox_id),
+            lambda png: {"bytes": len(png)},
+        )
+
+    # ---- implementations -------------------------------------------------
+
+    def _create(self, network: str) -> str:
         if network not in NETWORK_MODES:
             raise SandboxError(f"network must be 'none' or 'nat', got {network!r}.")
 
@@ -157,11 +230,11 @@ class SandboxManager:
                 sandboxes[sandbox_id]["status"] = "ready"
         return sandbox_id
 
-    def destroy(self, sandbox_id: str) -> None:
+    def _destroy(self, sandbox_id: str) -> None:
         self._require(sandbox_id)
         self._teardown(sandbox_id)
 
-    def run(self, sandbox_id: str, command: str, timeout_seconds: int = 60) -> RunResult:
+    def _run(self, sandbox_id: str, command: str, timeout_seconds: int) -> RunResult:
         if not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= MAX_RUN_TIMEOUT_SECONDS:
             raise SandboxError(f"timeout_seconds must be between 1 and {MAX_RUN_TIMEOUT_SECONDS}.")
         if not command.strip():
@@ -269,8 +342,10 @@ class SandboxManager:
             self._teardown(sandbox_id)
         except Exception as exc:
             log.warning("Could not remove %s sandbox %s: %s", reason, sandbox_id, exc)
+            self._audit.record("auto_destroy", sandbox_id=sandbox_id, reason=reason, ok=False, error=str(exc))
             return False
         log.info("Removed %s sandbox %s", reason, sandbox_id)
+        self._audit.record("auto_destroy", sandbox_id=sandbox_id, reason=reason, ok=True)
         return True
 
     # ---- file transfer ---------------------------------------------------
@@ -298,8 +373,7 @@ class SandboxManager:
             raise SandboxError("guest_path must be a full file path in the sandbox, like /home/debian/data.csv.")
         return guest_path
 
-    def copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> int:
-        """Copy one file from the transfer folder into the sandbox. Returns its size."""
+    def _copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> int:
         vmx = self._ready_vmx(sandbox_id)
         source = self._host_path(host_path)
         target = self._guest_path(guest_path)
@@ -311,8 +385,7 @@ class SandboxManager:
             raise SandboxError(f"Could not copy the file into the sandbox: {exc}") from exc
         return source.stat().st_size
 
-    def copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> tuple[Path, int]:
-        """Copy one file from the sandbox into the transfer folder. Returns (path, size)."""
+    def _copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> tuple[Path, int]:
         vmx = self._ready_vmx(sandbox_id)
         source = self._guest_path(guest_path)
         target = self._host_path(host_path)
@@ -325,8 +398,7 @@ class SandboxManager:
             raise SandboxError(f"Could not copy the file out of the sandbox: {exc}") from exc
         return target, target.stat().st_size
 
-    def screenshot(self, sandbox_id: str) -> bytes:
-        """PNG image of the sandbox's screen."""
+    def _screenshot(self, sandbox_id: str) -> bytes:
         vmx = self._ready_vmx(sandbox_id)
         with tempfile.TemporaryDirectory(prefix="vmsandbox-shot-") as tmp:
             png = Path(tmp) / "screen.png"

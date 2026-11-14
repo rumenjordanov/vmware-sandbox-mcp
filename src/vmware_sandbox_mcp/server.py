@@ -16,6 +16,7 @@ from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
 
 from . import __version__
+from .audit import AuditLog
 from .config import ConfigError, load_config
 from .manager import SandboxError, SandboxManager
 from .state import StateStore
@@ -44,7 +45,7 @@ def build_manager() -> SandboxManager:
         config.guest_user,
         config.guest_password,
     )
-    return SandboxManager(config, vmrun, StateStore(config.clones_dir))
+    return SandboxManager(config, vmrun, StateStore(config.clones_dir), audit=AuditLog(config.audit_log))
 
 
 async def _call(fn: Callable[..., T], *args: Any) -> T:

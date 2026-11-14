@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import overlaps, resolve
+from .paths import is_within, overlaps, resolve, same_path
 
 _VMRUN_CANDIDATES = (
     r"C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe",
@@ -32,6 +32,7 @@ class Config:
     max_sandboxes: int = 3
     max_age_minutes: int = 120
     boot_timeout_seconds: int = 180
+    audit_log: Path | None = None
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -80,8 +81,24 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
             "VMSANDBOX_TRANSFER_DIR must not overlap the base VM folder or the clones folder."
         )
 
+    audit_raw = env.get("VMSANDBOX_AUDIT_LOG", "").strip()
+    audit_log = resolve(audit_raw) if audit_raw else clones_dir / "audit.jsonl"
+    if audit_log.is_dir():
+        raise ConfigError(f"VMSANDBOX_AUDIT_LOG must be a file path, not a folder: {audit_log}")
+    if same_path(audit_log, transfer_dir) or is_within(audit_log, transfer_dir):
+        raise ConfigError(
+            "VMSANDBOX_AUDIT_LOG must not be inside the transfer folder (the agent could read or change it)."
+        )
+    if is_within(audit_log, base_vmx.parent):
+        raise ConfigError("VMSANDBOX_AUDIT_LOG must not be inside the base VM folder.")
+    if is_within(audit_log, clones_dir) and not same_path(audit_log.parent, clones_dir):
+        raise ConfigError("VMSANDBOX_AUDIT_LOG must not be inside a sandbox folder.")
+    if is_within(audit_log, clones_dir) and audit_log.name.lower() in ("state.json", "state.lock"):
+        raise ConfigError("VMSANDBOX_AUDIT_LOG must not be the server's own state file.")
+
     clones_dir.mkdir(parents=True, exist_ok=True)
     transfer_dir.mkdir(parents=True, exist_ok=True)
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
 
     return Config(
         vmrun_path=_find_vmrun(env),
@@ -94,4 +111,5 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         max_sandboxes=_positive_int(env, "VMSANDBOX_MAX_SANDBOXES", 3),
         max_age_minutes=_positive_int(env, "VMSANDBOX_MAX_AGE_MINUTES", 120),
         boot_timeout_seconds=_positive_int(env, "VMSANDBOX_BOOT_TIMEOUT_SECONDS", 180),
+        audit_log=audit_log,
     )

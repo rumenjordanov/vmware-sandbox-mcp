@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from .audit import AuditLog
 from .config import Config, ConfigError, load_config
 from .manager import SandboxError, SandboxManager
 from .state import StateStore
@@ -146,11 +147,26 @@ class Doctor:
                 good = self._report(FAIL, title, f"cannot write to {folder} ({exc})", "check its permissions.")
             else:
                 self._report(OK, title, f"{folder} is writable")
+        if config.audit_log is not None:
+            try:
+                with open(config.audit_log, "a", encoding="utf-8"):
+                    pass
+            except OSError as exc:
+                good = self._report(
+                    FAIL, "Audit log", f"cannot write to {config.audit_log} ({exc})", "check VMSANDBOX_AUDIT_LOG."
+                )
+            else:
+                self._report(OK, "Audit log", f"{config.audit_log} is writable")
         return good
 
     def _check_boot(self, config: Config, vmrun: VmrunClient) -> None:
         manager = SandboxManager(
-            config, vmrun, StateStore(config.clones_dir), clock=self._clock, sleep=self._sleep
+            config,
+            vmrun,
+            StateStore(config.clones_dir),
+            clock=self._clock,
+            sleep=self._sleep,
+            audit=AuditLog(config.audit_log, self._clock),
         )
         self._out("       Creating a test sandbox (this can take a minute)...")
         started = self._clock()
