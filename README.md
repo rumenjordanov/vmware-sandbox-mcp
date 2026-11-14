@@ -1,181 +1,79 @@
+<div align="center">
+
 # vmware-sandbox-mcp
 
-An MCP server that gives an AI agent a disposable Linux computer, backed by VMware Workstation on your own machine. The agent can create a sandbox from a clean snapshot, run commands in it, move files in and out, take a screenshot, and throw it away, without being able to touch your host or your other VMs.
+**Give your AI agent a disposable computer.**
 
-This is deliberately **not** a general VMware management server. The agent never sees VMware concepts; it sees "a computer I can use and destroy".
+An MCP server that lets Claude and other AI agents create a real Linux virtual machine,<br>
+run anything in it, and throw it away. It runs on your own PC with VMware Workstation.
 
-## Demo scenario
+[![tests](https://github.com/rumenjordanov/vmware-sandbox-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/rumenjordanov/vmware-sandbox-mcp/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![host: Windows](https://img.shields.io/badge/host-Windows-0078D4.svg)](#requirements)
+[![Model Context Protocol](https://img.shields.io/badge/MCP-server-8A2BE2.svg)](https://modelcontextprotocol.io)
 
-> **You:** I found `install.sh` on a forum. Put it in a sandbox, run it with internet access, and tell me what it actually does before I run it for real.
+[Quick start](#quick-start) · [Tools](#tools) · [Network modes](#network-modes) · [Security](#security) · [Setup guide](docs/setup.md)
 
-The agent then:
+<img src="docs/images/desktop-typed.png" alt="A sandbox desktop where the agent opened a text editor and typed into it" width="720">
 
-1. calls `sandbox_create(network="web")` and gets `sbx-3f9a1c2e` about 25 seconds later;
+<sub>A real sandbox: the agent logged in, opened the text editor and typed, using only the tools below.</sub>
+
+</div>
+
+## Why
+
+You want an agent to run an install script from a forum, try an unknown package, or click through a desktop program. You do not want it doing that on your own machine.
+
+- **A full virtual machine, not a container.** Each sandbox is its own VM with its own kernel, created from a clean snapshot (about 25 seconds on the test machine) and deleted when the agent is done.
+- **The agent never sees VMware.** It gets 13 plain tools: create a computer, run a command, copy files, look at the screen, click, type, destroy. This is deliberately not a general VMware management server.
+- **Your other VMs are off limits.** The server can only touch virtual machines it created itself. That is enforced in code and covered by tests, not left to the agent's good behaviour.
+- **Internet without your home network.** In `web` mode a sandbox can download from public websites but cannot reach your PC, your router or anything else on your network.
+- **Everything is logged.** Every command, file copy, click and web request goes into an audit log the agent cannot read or change.
+- **Local.** No cloud account, no API key, no per-minute billing. It needs VMware Workstation and Python, nothing else.
+
+## What you can ask for
+
+> I found `install.sh` on a forum. Put it in a sandbox, run it with web access, and tell me what it actually does before I run it for real.
+
+> Start a sandbox, install nginx, serve this folder with it and check that the page loads.
+
+> Open the text editor in a sandbox, type a short note, save it, and show me a screenshot.
+
+For the first one, the agent:
+
+1. calls `sandbox_create(network="web")` and gets a `sandbox_id` back;
 2. calls `sandbox_copy_in` to copy `install.sh` from your transfer folder into the sandbox;
 3. calls `sandbox_run` to execute it, then again to inspect new files, processes and services;
-4. calls `sandbox_copy_out` to save a log of what changed into your transfer folder;
+4. calls `sandbox_copy_out` to save a report into your transfer folder;
 5. calls `sandbox_destroy`. Whatever the script did is gone.
 
-## Tools
+## How it works
 
-| Tool | What it does |
-|---|---|
-| `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"` (see [Network modes](#network-modes)). Returns a `sandbox_id`. |
-| `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
-| `sandbox_start(sandbox_id, command)` | Starts a command that keeps running in the background (a server, a long build). Returns a `job_id` at once. |
-| `sandbox_check(sandbox_id, job_id)` | Whether a background command is running, exited or stopped, its exit code, and its output so far. |
-| `sandbox_stop(sandbox_id, job_id)` | Stops a background command and the programs it started. |
-| `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
-| `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
-| `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
-| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. Needs keyboard and mouse switched on. |
-| `sandbox_type(sandbox_id, text)` | Types text on the sandbox's keyboard. |
-| `sandbox_key(sandbox_id, keys)` | Presses a key or shortcut, such as `Return` or `ctrl+c`. |
-| `sandbox_destroy(sandbox_id)` | Powers off and deletes the sandbox. |
-| `sandbox_list()` | Active sandboxes with age and network mode. |
+```mermaid
+flowchart LR
+    A["AI agent<br>(Claude Code, Claude Desktop, ...)"] -- "MCP (stdio)" --> S["vmware-sandbox-mcp"]
+    S -- "clone from, never start" --> B[("base VM<br>clean snapshot")]
+    S -- "allowlisted vmrun calls" --> C[("sandbox<br>linked clone")]
+    C -- "web mode only" --> P["filtering proxy"]
+    P --> I(("public<br>internet"))
+    S --- T["transfer folder"]
+    S --- L["audit log"]
+```
 
-## Network modes
-
-| Mode | What the sandbox can reach | Host setup |
-|---|---|---|
-| `none` (default) | Nothing. The sandbox has no network adapter. | none |
-| `web` | Public websites over HTTP and HTTPS, through a filtering proxy on the host. Not your computer, not your home network, no other protocols. | one-time, needs admin rights (see [Web mode setup](#web-mode-setup)) |
-| `nat` | The whole internet, **and also your host and your local network**. | none |
-
-Use `web` whenever a task needs to download something. Keep `nat` for code you trust.
+Every sandbox is a linked clone of one powered-off snapshot of a Linux VM that you prepare once. Before a clone boots for the first time, its settings are rewritten: no shared folders, no clipboard, no USB, no CD-ROM, and no network unless the agent asked for one.
 
 ## Requirements
 
-- A **Windows host** with VMware Workstation Pro and its `vmrun` command-line tool (developed and tested on Workstation 25H2, vmrun 1.17.0, Windows 11). Linux hosts are not supported: the path checks, the web-mode setup script and all real-VM testing are Windows-only.
-- Python 3.11 or newer.
-- A Linux base VM prepared as described below.
+- A **Windows host** with VMware Workstation Pro and its `vmrun` command-line tool. Developed and tested on Workstation 25H2 (vmrun 1.17.0) on Windows 11. Linux hosts are not supported.
+- **Python 3.11** or newer.
+- A **Linux virtual machine** to use as the base image. Debian 13 is what this was tested with.
 
-## Install
+## Quick start
 
-Not on PyPI yet. Run it straight from a checkout or from Git with one command:
+**1. Prepare the base VM** (once). Create a Debian VM in VMware Workstation, install `open-vm-tools`, shut it down completely and take a snapshot named `clean`. Details: [setup guide](docs/setup.md#base-vm-setup).
 
-```
-uvx --from git+https://github.com/rumenjordanov/vmware-sandbox-mcp vmware-sandbox-mcp
-```
-
-or
-
-```
-pip install git+https://github.com/rumenjordanov/vmware-sandbox-mcp
-```
-
-The server speaks MCP over stdio and is normally started by your MCP client (see below), not by hand.
-
-## Base VM setup
-
-1. Create a Linux VM in VMware Workstation (Debian 13 is what this was tested with). Keep it in its own folder.
-2. Inside the VM, install the guest tools and make sure bash, `timeout` and `tar` exist (they do on any standard Debian install):
-   ```
-   sudo apt-get install open-vm-tools
-   ```
-3. Create the user account the server will log in as. Its name and password go into environment variables, never into this repository.
-4. Optional, if the agent should be able to install software: give that user passwordless `sudo`:
-   ```
-   echo 'debian ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sandbox
-   chmod 440 /etc/sudoers.d/sandbox
-   ```
-   Installing packages also needs a sandbox created with `network="web"` or `"nat"`.
-5. **Shut the VM down completely** (not suspend), then take a snapshot, for example named `clean`. Every sandbox is a linked clone of this snapshot.
-6. Do not delete or move the base VM or that snapshot while sandboxes exist; linked clones read from it.
-
-To update the base image later: boot the base VM, make changes, power off, take a new snapshot, and point `VMSANDBOX_SNAPSHOT` at it.
-
-## Configuration
-
-All configuration is through environment variables. The server refuses to start if a required one is missing.
-
-| Variable | Required | Default | Meaning |
-|---|---|---|---|
-| `VMSANDBOX_BASE_VMX` | yes | | Full path of the base VM's `.vmx` file. |
-| `VMSANDBOX_SNAPSHOT` | yes | | Name of the powered-off snapshot to clone from. |
-| `VMSANDBOX_CLONES_DIR` | yes | | Folder where sandboxes live. Created if missing. Use it for nothing else. |
-| `VMSANDBOX_TRANSFER_DIR` | yes | | The only host folder `copy_in` / `copy_out` can read or write. Created if missing. |
-| `VMSANDBOX_GUEST_USER` | yes | | Login name inside the base VM. |
-| `VMSANDBOX_GUEST_PASSWORD` | yes | | Password for that login. |
-| `VMSANDBOX_MAX_SANDBOXES` | no | `3` | Maximum sandboxes existing at once. |
-| `VMSANDBOX_MAX_AGE_MINUTES` | no | `120` | Sandboxes older than this are destroyed automatically. |
-| `VMSANDBOX_BOOT_TIMEOUT_SECONDS` | no | `180` | How long `sandbox_create` waits for the guest to become ready. |
-| `VMSANDBOX_VMRUN_PATH` | no | auto-detected | Full path of `vmrun` if it is not in the standard location. |
-| `VMSANDBOX_AUDIT_LOG` | no | `audit.jsonl` in the clones folder | File the audit log is appended to. |
-| `VMSANDBOX_REMOTE_INPUT` | no | off | `on` enables the keyboard and mouse tools (see [Keyboard and mouse](#keyboard-and-mouse)). |
-| `VMSANDBOX_WEB_VNET` | no | | Dedicated host-only VMware network for `web` sandboxes, for example `VMnet9`. Setting it (together with the next one) switches `web` mode on. |
-| `VMSANDBOX_WEB_PROXY_HOST` | no | | This computer's IP address on that network. The proxy listens only there. |
-| `VMSANDBOX_WEB_PROXY_PORT` | no | `3128` | Port the proxy listens on. |
-| `VMSANDBOX_WEB_PORTS` | no | `80,443` | Destination ports `web` sandboxes may connect to. |
-
-The clones folder, the transfer folder and the base VM folder must not overlap; the server checks this at startup.
-
-### Web mode setup
-
-`web` mode gives a sandbox web access without letting it reach your computer or your local network. It works like this:
-
-- The sandbox is attached to a dedicated host-only VMware network. That network has no gateway, so there is no route to anywhere.
-- The server runs a small proxy on your computer's address on that network. It forwards HTTP and HTTPS to public internet addresses and refuses private, local and reserved addresses, your computer's own addresses, and ports other than 80 and 443. Names are resolved by the proxy, and it connects to exactly the address it checked.
-- Windows Firewall rules, limited to that one network adapter, block everything from the sandbox to your computer except the proxy port.
-- Commands run in a `web` sandbox get `http_proxy` / `https_proxy` set automatically, so `curl`, `wget`, `pip` and `git` over https work. With `sudo`, use `sudo -E` so the variables are kept, for example `sudo -E apt-get -y install jq`.
-
-Setup, once, with administrator rights:
-
-1. **Create the network.** In VMware Workstation: Edit > Virtual Network Editor > Change Settings > Add Network. Pick an unused one from VMnet2 to VMnet19 (not VMnet8), set it to **Host-only**, tick **Connect a host virtual adapter to this network** and **Use local DHCP service**, then Apply. Applying restarts VMware's network services for a moment, so do it while your other VMs are not busy on the network.
-2. **Create the firewall rules.** In an elevated PowerShell, from the project folder:
-   ```
-   .\scripts\setup-web-network.ps1 -Vnet VMnet9
-   ```
-   It prints the two settings to use. Every rule is limited to that adapter and is in the firewall group `vmware-sandbox-mcp`; `-Remove` deletes them again.
-3. **Add the settings** it printed (`VMSANDBOX_WEB_VNET`, `VMSANDBOX_WEB_PROXY_HOST`) to the server's environment.
-4. **Verify.** `vmware-sandbox-mcp doctor` creates a `web` sandbox and checks from inside it that a public site loads, that the proxy refuses private addresses, that your computer's file-sharing ports are unreachable, and that there is no direct route out.
-
-The server refuses to start in `web` mode on VMnet0 (bridged), VMnet1 or VMnet8 (NAT), or on any network that VMware records as NAT.
-
-### Keyboard and mouse
-
-Off by default. With `VMSANDBOX_REMOTE_INPUT=on`, the agent can operate graphical programs: it looks with `sandbox_screenshot` and acts with `sandbox_click`, `sandbox_type` and `sandbox_key`. No change to the base VM and no admin rights are needed.
-
-How it works: every sandbox created while the setting is on gets VMware's built-in remote display (VNC), bound to `127.0.0.1`, on its own random port, with its own random password. The server connects to it for each click or keystroke. The port and password are kept in the server's state file in the clones folder, never shown to the agent, and gone when the sandbox is destroyed. When the setting is off, clones have the remote display explicitly disabled, even if the base VM has one configured.
-
-What to know:
-
-- **US keyboard layout is assumed** in the sandbox. Only plain English keyboard characters can be typed.
-- **A graphical guest starts at its login screen.** The agent does not know the guest password, so either set up automatic login in the base VM, or log in yourself. Whatever is typed is written to the audit log, except the guest password, which is blanked.
-- **Shortcuts with Ctrl+Alt** (such as switching to a text console with Ctrl+Alt+F3) did not reach the guest in testing.
-- **No scrolling or dragging yet**, and no clipboard.
-- `vmware-sandbox-mcp doctor` checks that input works and that the remote display is not reachable through any of your computer's network addresses.
-
-### Audit log
-
-Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, background commands started, checked and stopped, files copied, screenshots taken, clicks, typed text and key presses, and every request a `web` sandbox makes through the proxy (destination, address, allowed or refused). Refused and failed operations are recorded too, with the reason. Example:
-
-```json
-{"time": "2026-11-14T12:08:19Z", "event": "run", "sandbox_id": "sbx-cbe8c2a2", "command": "echo out; echo err >&2; exit 3", "timeout_seconds": 30, "ok": true, "seconds": 4.1, "exit_code": 3, "timed_out": false, "stdout_bytes": 4, "stderr_bytes": 4}
-```
-
-What to know about it:
-
-- **Command text is recorded in full.** If the agent runs a command containing a secret (a token in a `curl` call, say), that secret is in the log in plain text. Treat the file accordingly.
-- **Command output is not recorded**, only its size, the exit code and the duration. The guest password is never recorded.
-- **Times are UTC.**
-- **The agent cannot read or change the log.** The server refuses to start if the log is inside the transfer folder, the base VM folder or a sandbox folder.
-- **The file grows without limit.** There is no rotation; delete or archive it yourself.
-- **Logging never blocks an operation.** If the file cannot be written (disk full, for example), the server prints a warning to stderr and carries on, so a sandbox can always still be destroyed.
-
-### Check your setup
-
-With the environment variables set, run:
-
-```
-vmware-sandbox-mcp doctor
-```
-
-It checks the settings, `vmrun`, the snapshot (exists and was taken powered off), both folders and the audit log. It then creates one test sandbox, logs in, runs a command and destroys it again, which takes about a minute. Each problem is printed with what to fix, and the exit code is 0 only if nothing failed. `doctor --no-boot` skips the test sandbox.
-
-### Claude Code
-
-Add to `.mcp.json` in your project (or your user-level MCP configuration):
+**2. Add the server to your MCP client.** For Claude Code, put this in `.mcp.json`:
 
 ```json
 {
@@ -196,75 +94,119 @@ Add to `.mcp.json` in your project (or your user-level MCP configuration):
 }
 ```
 
-Claude Code expands `${VAR}` from your own environment, so the credentials stay out of the file.
+The Claude Desktop version is in the [setup guide](docs/setup.md#claude-desktop). The package is not on PyPI yet; `uvx` and `pip` install it straight from this repository:
 
-### Claude Desktop
-
-Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
-
-```json
-{
-  "mcpServers": {
-    "vmware-sandbox": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/rumenjordanov/vmware-sandbox-mcp", "vmware-sandbox-mcp"],
-      "env": {
-        "VMSANDBOX_BASE_VMX": "E:\\Virtual Machines\\sandbox-base\\Debian 13.x 64-bit.vmx",
-        "VMSANDBOX_SNAPSHOT": "clean",
-        "VMSANDBOX_CLONES_DIR": "E:\\vmsandbox-clones",
-        "VMSANDBOX_TRANSFER_DIR": "E:\\vmsandbox-transfer",
-        "VMSANDBOX_GUEST_USER": "your-guest-user",
-        "VMSANDBOX_GUEST_PASSWORD": "your-guest-password"
-      }
-    }
-  }
-}
+```
+pip install git+https://github.com/rumenjordanov/vmware-sandbox-mcp
 ```
 
-Here the guest password sits in that file in plain text. Use a password that is used nowhere else; it only unlocks a throwaway VM.
+**3. Check the setup.** With the same variables set in a terminal:
 
-## Security model
+```
+vmware-sandbox-mcp doctor
+```
 
-What the server enforces, in code and covered by tests:
+It verifies the settings, creates one test sandbox, runs a command in it and deletes it again. Every problem is printed with what to fix.
 
-- **It only touches VMs it created.** Every VMware call goes through one wrapper class with a command allowlist. The base VM may only be read (`listSnapshots`) and cloned from; it is never started, stopped, modified or deleted. Every other command is refused unless its target is a `.vmx` at `<clones folder>/<sandbox id>/`, after resolving `..`, symlinks and junctions.
-- **It only deletes what it marked.** A folder is removed only if it is directly inside the clones folder, is named like a sandbox id, and contains the marker file the server wrote. Anything else in the clones folder is left alone.
-- **Isolation before first boot.** Each clone's `.vmx` is rewritten before it ever starts: shared folders off, clipboard and drag-and-drop off, and the CD-ROM, USB controller, sound card and serial/parallel ports removed.
-- **No network by default.** `network="none"` removes the network adapter from the clone entirely.
-- **Web access without local access.** `network="web"` attaches the clone only to the dedicated host-only network, and the proxy decides every connection: public addresses and the allowed ports only. The destination rules, including IPv6 forms that hide an IPv4 address and names that resolve to private addresses, are covered by tests.
-- **One transfer folder.** `copy_in` and `copy_out` only accept host paths that resolve inside the transfer folder. Traversal, absolute paths elsewhere, and links pointing out of the folder are rejected.
-- **Folders are unpacked defensively.** A folder travels as one archive. Coming out of a sandbox, that archive is treated as hostile: only plain files and folders are created, each checked to land inside the target folder. Links, devices, absolute or `..` names, and names Windows cannot store are left out, and the reply says how many. Going in, a host folder that contains a link or junction is refused, so a link cannot pull files from outside the transfer folder into a sandbox.
-- **No host shell.** `vmrun` is called with an argument list, never through a shell. A command for the sandbox travels as file content, never as a command-line argument.
-- **Keyboard and mouse stay on your computer.** The remote display used for input is off unless you enable it. When on, it listens on `127.0.0.1` only, so it is not reachable from your network or from any sandbox, and it requires a per-sandbox random password. The server refuses a display that does not ask for a password.
-- **Limits.** Every command has a timeout (1 to 3600 seconds) enforced inside the guest, with a second host-side timeout. Output is cut at 1 MB per stream. The number of sandboxes is capped. Sandboxes past the maximum age are destroyed, and sandboxes left behind by a crash or reboot are removed at startup.
+**4. Ask your agent** to create a sandbox and do something in it.
 
-### Limits of this model, stated honestly
+## Tools
 
-- **The boundary is VMware's.** A sandbox is exactly as contained as a VMware virtual machine. A hypervisor escape vulnerability would defeat it. Keep Workstation updated.
-- **NAT is not internet-only.** A sandbox created with `network="nat"` can reach the internet, **and also your host and other devices on your local network** (routers, NAS, printers, other computers), through VMware's NAT. Do not use `nat` for code you consider actively hostile; use `web`.
-- **Web mode depends on the host setup.** The proxy's rules are enforced by this project's code, but keeping the sandbox away from your computer's other ports is done by the Windows Firewall rules from the setup script. If they are removed or the network is reconfigured, that protection is gone; `doctor` detects it.
-- **Web mode still lets data out.** Code in a `web` sandbox can send anything it has to any public website. It protects your network, not the secrecy of what you put in the sandbox.
-- **Web mode is web only.** No ping, no DNS lookups in the sandbox, no SSH or other protocols, and one request per connection for plain HTTP. Programs that ignore the proxy variables have no network.
-- **Web sandboxes can see each other.** They share one private network. The proxy only works while the server is running.
-- **The proxy is code on your host that reads untrusted input.** It is small and tested, but it is attack surface that `none` and `nat` do not have.
-- **What comes out is untrusted.** Files copied out of a sandbox, and the text a command prints, were produced by whatever ran in there. Do not open or run copied-out files without thought, and be aware that command output could contain text designed to mislead the agent.
-- **The transfer folder is fully exposed to the agent.** It can read every file in it and overwrite files there. Keep nothing in it that you would not hand to the agent.
-- **The guest password is visible locally.** `vmrun` only accepts it as a command-line argument, so other processes of local users can see it while a call runs. It may also sit in your MCP client's configuration file.
-- **The base VM folder is written to by VMware.** Creating a linked clone makes VMware add a `snapshotN.cloneM` line to the base VM's `.vmsd` file. These lines are harmless but are not removed when a sandbox is destroyed, and Workstation will consider the snapshot "in use" by clones.
-- **Sandboxes outlive the server.** They are not destroyed when the MCP client exits (two clients may share them). They disappear when destroyed, when they exceed the maximum age, or at the next startup if they are no longer running.
-- **Resources.** Each sandbox uses the base VM's memory and CPU allocation, and its disk grows until it is destroyed. The cap limits the count, not the size.
-- **Races.** Path checks happen just before the copy. Another program on the host changing links inside the transfer folder at exactly that moment could defeat them.
-- **Folder copies are not exact mirrors.** Files copied in lose the executable flag (Windows has none). Copied out, links, special files (pipes, devices) and names not valid on Windows (containing `:` `?` `*` or a backslash, ending in a dot, or reserved names like `CON`) are left out. Two names differing only in case end up as one file. The limit is 100,000 files or 4 GB per copy.
-- **Background commands are a convenience, not a limit.** The cap of 8 per sandbox is counted inside the sandbox, so code running there can get around it, just as any command can start more processes with `&`. Their output is kept on the sandbox's own disk without a size limit; a check returns the newest 1 MB. A program that detaches itself into its own session survives `sandbox_stop`, until the sandbox is destroyed.
-- **The remote display is protected against the network, not against your own account.** With keyboard and mouse on, any program running as you on this computer could connect to a sandbox's display if it obtained the password (VNC passwords are 8 characters and the protocol is old). Such a program could already control your VMs through VMware's own tools. The password is also stored in plain text in the sandbox's `.vmx` and in the state file, both in the clones folder.
-- **Keyboard and mouse are slow and blind.** Each action is a separate step and the agent only sees what it asks a screenshot for. Prefer `sandbox_run` whenever a command can do the job.
+| Tool | What it does |
+|---|---|
+| `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"`. Returns a `sandbox_id`. |
+| `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
+| `sandbox_start(sandbox_id, command)` | Starts a command that keeps running in the background (a server, a long build). Returns a `job_id` at once. |
+| `sandbox_check(sandbox_id, job_id)` | Whether a background command is running, exited or stopped, its exit code, and its output so far. |
+| `sandbox_stop(sandbox_id, job_id)` | Stops a background command and the programs it started. |
+| `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
+| `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
+| `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
+| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. |
+| `sandbox_type(sandbox_id, text)` | Types text on the sandbox's keyboard. |
+| `sandbox_key(sandbox_id, keys)` | Presses a key or shortcut, such as `Return` or `ctrl+c`. |
+| `sandbox_destroy(sandbox_id)` | Powers off and deletes the sandbox. |
+| `sandbox_list()` | Active sandboxes with age and network mode. |
 
-### Future improvements
+The three keyboard and mouse tools are off until you [switch them on](docs/setup.md#keyboard-and-mouse).
 
-- Isolating `web` sandboxes from each other.
-- An allowlist of sites for `web` mode.
-- Scrolling, dragging and clipboard for the keyboard and mouse tools.
-- Publishing to PyPI.
+## Network modes
+
+| Mode | What the sandbox can reach | Host setup |
+|---|---|---|
+| `none` (default) | Nothing. The sandbox has no network adapter. | none |
+| `web` | Public websites over HTTP and HTTPS, through a filtering proxy on the host. Not your computer, not your home network, no other protocols. | one-time, needs admin rights: [web mode setup](docs/setup.md#web-mode-setup) |
+| `nat` | The whole internet, **and also your host and your local network**. | none |
+
+Use `web` whenever a task needs to download something. Keep `nat` for code you trust.
+
+Measured from inside a real sandbox on the test machine:
+
+| Target | `nat` | `web` |
+|---|---|---|
+| Public websites | reachable | reachable, through the proxy |
+| Host's file-sharing ports (135, 139, 445) | **open** | no answer |
+| Home router | **answers** | unreachable |
+| Internet without the proxy | reachable | unreachable |
+
+## Configuration
+
+All configuration is through environment variables. The server refuses to start if a required one is missing.
+
+<details>
+<summary><b>All settings</b></summary>
+
+<br>
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `VMSANDBOX_BASE_VMX` | yes | | Full path of the base VM's `.vmx` file. |
+| `VMSANDBOX_SNAPSHOT` | yes | | Name of the powered-off snapshot to clone from. |
+| `VMSANDBOX_CLONES_DIR` | yes | | Folder where sandboxes live. Created if missing. Use it for nothing else. |
+| `VMSANDBOX_TRANSFER_DIR` | yes | | The only host folder `copy_in` / `copy_out` can read or write. Created if missing. |
+| `VMSANDBOX_GUEST_USER` | yes | | Login name inside the base VM. |
+| `VMSANDBOX_GUEST_PASSWORD` | yes | | Password for that login. |
+| `VMSANDBOX_MAX_SANDBOXES` | no | `3` | Maximum sandboxes existing at once. |
+| `VMSANDBOX_MAX_AGE_MINUTES` | no | `120` | Sandboxes older than this are destroyed automatically. |
+| `VMSANDBOX_BOOT_TIMEOUT_SECONDS` | no | `180` | How long `sandbox_create` waits for the guest to become ready. |
+| `VMSANDBOX_VMRUN_PATH` | no | auto-detected | Full path of `vmrun` if it is not in the standard location. |
+| `VMSANDBOX_AUDIT_LOG` | no | `audit.jsonl` in the clones folder | File the audit log is appended to. |
+| `VMSANDBOX_REMOTE_INPUT` | no | off | `on` enables the keyboard and mouse tools. See [keyboard and mouse](docs/setup.md#keyboard-and-mouse). |
+| `VMSANDBOX_WEB_VNET` | no | | Dedicated host-only VMware network for `web` sandboxes, for example `VMnet9`. Setting it (together with the next one) switches `web` mode on. |
+| `VMSANDBOX_WEB_PROXY_HOST` | no | | This computer's IP address on that network. The proxy listens only there. |
+| `VMSANDBOX_WEB_PROXY_PORT` | no | `3128` | Port the proxy listens on. |
+| `VMSANDBOX_WEB_PORTS` | no | `80,443` | Destination ports `web` sandboxes may connect to. |
+
+The clones folder, the transfer folder and the base VM folder must not overlap; the server checks this at startup.
+
+</details>
+
+## Security
+
+The short version of what is enforced in code and covered by tests:
+
+- **Only its own VMs.** Every VMware call goes through one wrapper with a command allowlist and a path check. The base VM can only be read and cloned from, never started, changed or deleted.
+- **Only what it marked gets deleted.** A folder is removed only if the server created and marked it.
+- **Isolated before first boot.** Shared folders, clipboard, drag-and-drop, USB, CD-ROM and sound are removed from every clone.
+- **No network unless asked for**, and `web` mode refuses private addresses, the host's own addresses and non-web ports.
+- **One transfer folder.** File copies cannot leave it: path traversal, links and hostile archives are rejected.
+- **No host shell.** Agent-supplied text is never placed on a command line, on the host or in the sandbox.
+- **Limits.** Timeouts on every command, a cap on sandboxes, automatic removal of old and orphaned ones.
+
+It also has real limits, and they are written down rather than hidden: a sandbox is exactly as contained as a VMware VM, `nat` mode can reach your local network, and anything that comes out of a sandbox is untrusted. Read the full [security model and its limits](docs/security.md) before pointing it at code you consider hostile.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Status
+
+Version 0.1. It works and is tested, and it is young.
+
+- **Tested on one setup:** Windows 11, VMware Workstation 25H2, Debian 13 guest.
+- **Not on PyPI yet.**
+- **Keyboard and mouse** assume a US keyboard layout, and have no scrolling or dragging yet.
+- **Planned:** isolating `web` sandboxes from each other, a site allowlist for `web` mode, scrolling and dragging, a PyPI release.
+
+Bug reports and pull requests are welcome. If this is useful to you, a star helps other people find it.
 
 ## Development
 
@@ -274,9 +216,9 @@ uv pip install -e ".[dev]"
 .venv\Scripts\python -m pytest
 ```
 
-The unit tests replace the `vmrun` process with a fake, so the real wrapper and its path guard are exercised in every test and no VMware installation is needed.
+The unit tests (more than 450) replace the `vmrun` process with a fake, so the real wrapper and its path guard are exercised in every test and no VMware installation is needed. They run on GitHub Actions on every push.
 
-End-to-end test against your real base VM (creates and destroys one sandbox, about a minute), with the environment variables above set:
+End-to-end test against your real base VM, with the environment variables set:
 
 ```
 .venv\Scripts\python scripts\e2e.py

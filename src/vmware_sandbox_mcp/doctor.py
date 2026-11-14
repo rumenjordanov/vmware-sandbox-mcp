@@ -273,7 +273,7 @@ class Doctor:
                 proxy.stop()
 
     def _judge_web(self, seen: dict[str, str], config: Config) -> None:
-        setup = "run scripts\\setup-web-network.ps1 as administrator (see README)."
+        setup = "run scripts\\setup-web-network.ps1 as administrator (see docs/setup.md)."
         if seen.get(f"port{config.web_proxy_port}") != "open":
             self._report(
                 FAIL,
@@ -376,7 +376,7 @@ class Doctor:
                 WARN,
                 "Installing software",
                 f"user {config.guest_user!r} has no passwordless sudo, so sandboxes cannot install packages",
-                "optional. See 'Base VM setup' in the README.",
+                "optional. See 'Base VM setup' in docs/setup.md.",
             )
 
 

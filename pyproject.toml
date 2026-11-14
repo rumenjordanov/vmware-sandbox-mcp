@@ -9,10 +9,30 @@ description = "MCP server that gives an AI agent a disposable computer, backed b
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+keywords = [
+    "mcp", "model-context-protocol", "mcp-server", "sandbox", "vmware", "vmware-workstation",
+    "virtual-machine", "ai-agent", "claude", "code-execution", "computer-use",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = ["mcp>=2,<3"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/rumenjordanov/vmware-sandbox-mcp"
+Documentation = "https://github.com/rumenjordanov/vmware-sandbox-mcp/blob/main/docs/setup.md"
+Issues = "https://github.com/rumenjordanov/vmware-sandbox-mcp/issues"
 
 [project.scripts]
 vmware-sandbox-mcp = "vmware_sandbox_mcp.server:main"
