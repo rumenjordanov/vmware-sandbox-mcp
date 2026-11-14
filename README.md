@@ -46,7 +46,7 @@ Use `web` whenever a task needs to download something. Keep `nat` for code you t
 
 ## Requirements
 
-- VMware Workstation Pro with the `vmrun` command-line tool (developed and tested on Workstation 25H2, vmrun 1.17.0, Windows 11 host). Linux hosts are untested.
+- A **Windows host** with VMware Workstation Pro and its `vmrun` command-line tool (developed and tested on Workstation 25H2, vmrun 1.17.0, Windows 11). Linux hosts are not supported: the path checks, the web-mode setup script and all real-VM testing are Windows-only.
 - Python 3.11 or newer.
 - A Linux base VM prepared as described below.
 
