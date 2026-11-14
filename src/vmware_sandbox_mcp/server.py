@@ -183,6 +183,14 @@ def _reaper_loop(manager: SandboxManager, interval_seconds: float = 60) -> None:
 
 def main() -> None:
     global _manager
+    args = sys.argv[1:]
+    if args[:1] == ["doctor"]:
+        from .doctor import main as doctor_main
+
+        raise SystemExit(doctor_main(args[1:]))
+    if args:
+        print("usage: vmware-sandbox-mcp [doctor [--no-boot]]", file=sys.stderr)
+        raise SystemExit(2)
     try:
         _manager = build_manager()
     except ConfigError as exc:

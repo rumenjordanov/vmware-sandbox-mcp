@@ -97,9 +97,19 @@ class SandboxManager:
 
     def _wait_ready(self, vmx: Path) -> None:
         deadline = self._clock() + self._config.boot_timeout_seconds
+        rejected = 0
         while self._clock() < deadline:
-            if self._vmrun.tools_running(vmx) and self._vmrun.run_program(vmx, "/bin/true") == 0:
-                return
+            if self._vmrun.tools_running(vmx):
+                worked, message = self._vmrun.probe_guest(vmx)
+                if worked:
+                    return
+                # A wrong login never starts working, so do not wait out the whole boot timeout.
+                rejected = rejected + 1 if "invalid user name or password" in message.lower() else 0
+                if rejected >= 3:
+                    raise SandboxError(
+                        "The sandbox rejected the guest login. Check VMSANDBOX_GUEST_USER and "
+                        "VMSANDBOX_GUEST_PASSWORD against the account in the base VM."
+                    )
             self._sleep(2)
         raise SandboxError(
             f"The sandbox did not become ready within {self._config.boot_timeout_seconds}s."

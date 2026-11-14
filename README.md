@@ -88,6 +88,16 @@ All configuration is through environment variables. The server refuses to start 
 
 The clones folder, the transfer folder and the base VM folder must not overlap; the server checks this at startup.
 
+### Check your setup
+
+With the environment variables set, run:
+
+```
+vmware-sandbox-mcp doctor
+```
+
+It checks the settings, `vmrun`, the snapshot (exists and was taken powered off) and both folders. It then creates one test sandbox, logs in, runs a command and destroys it again, which takes about a minute. Each problem is printed with what to fix, and the exit code is 0 only if nothing failed. `doctor --no-boot` skips the test sandbox.
+
 ### Claude Code
 
 Add to `.mcp.json` in your project (or your user-level MCP configuration):

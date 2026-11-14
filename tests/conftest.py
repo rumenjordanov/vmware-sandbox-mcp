@@ -67,6 +67,7 @@ class FakeVmrunProcess:
         self.ran: list[tuple[str, int]] = []
         self.next_result: tuple[bytes, bytes, int] = (b"", b"", 0)
         self.hang = False
+        self.bad_login = False
         self.screen = b"\x89PNG\r\n\x1a\nfake-image"
 
     def commands(self) -> list[str]:
@@ -108,6 +109,8 @@ class FakeVmrunProcess:
         if command == "checkToolsState":
             return 0, "running" if self.tools_ready else "installed"
         if command == "runProgramInGuest":
+            if self.bad_login:
+                return 255, "Error: Invalid user name or password for the guest OS"
             if args[1] == "/bin/true":
                 return 0, ""
             if self.hang:

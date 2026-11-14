@@ -184,6 +184,11 @@ class VmrunClient:
         code, _ = self._run("runProgramInGuest", vmx, program, *args, timeout=timeout, check=False)
         return code
 
+    def probe_guest(self, vmx: str | os.PathLike[str]) -> tuple[bool, str]:
+        """Try a no-op program in the guest. Returns (worked, vmrun's message)."""
+        code, out = self._run("runProgramInGuest", vmx, "/bin/true", timeout=60, check=False)
+        return code == 0, out
+
     def copy_to_guest(self, vmx: str | os.PathLike[str], host_path: str | os.PathLike[str], guest_path: str) -> None:
         self._run("CopyFileFromHostToGuest", vmx, str(host_path), guest_path, timeout=300)
 
