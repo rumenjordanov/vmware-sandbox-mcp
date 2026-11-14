@@ -22,10 +22,11 @@ def copy_calls(env):
 def test_copy_in_and_out_roundtrip(ready):
     (ready.transfer / "in dir").mkdir()
     (ready.transfer / "in dir" / "a b.txt").write_bytes(b"payload")
-    assert ready.manager.copy_in(ready.sid, "in dir/a b.txt", "/home/debian/a b.txt") == 7
+    assert ready.manager.copy_in(ready.sid, "in dir/a b.txt", "/home/debian/a b.txt").bytes == 7
     assert ready.fake.guest_files["/home/debian/a b.txt"] == b"payload"
 
-    path, size = ready.manager.copy_out(ready.sid, "/home/debian/a b.txt", "out/new/b.txt")
+    done = ready.manager.copy_out(ready.sid, "/home/debian/a b.txt", "out/new/b.txt")
+    path, size = done.path, done.bytes
     assert path == ready.transfer / "out" / "new" / "b.txt"
     assert path.read_bytes() == b"payload" and size == 7
 
@@ -103,11 +104,9 @@ def test_link_pointing_outside_transfer_is_rejected(ready):
     assert copy_calls(ready) == []
 
 
-def test_copy_in_requires_existing_regular_file(ready):
-    (ready.transfer / "folder").mkdir()
-    for host_path in ("missing.txt", "folder"):
-        with pytest.raises(SandboxError):
-            ready.manager.copy_in(ready.sid, host_path, "/tmp/x")
+def test_copy_in_requires_something_to_exist(ready):
+    with pytest.raises(SandboxError, match="Nothing at"):
+        ready.manager.copy_in(ready.sid, "missing.txt", "/tmp/x")
     assert copy_calls(ready) == []
 
 

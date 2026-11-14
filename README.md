@@ -22,8 +22,8 @@ The agent then:
 |---|---|
 | `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"` (see [Network modes](#network-modes)). Returns a `sandbox_id`. |
 | `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
-| `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies one file from the transfer folder into the sandbox. |
-| `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies one file from the sandbox into the transfer folder. |
+| `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
+| `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
 | `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
 | `sandbox_destroy(sandbox_id)` | Powers off and deletes the sandbox. |
 | `sandbox_list()` | Active sandboxes with age and network mode. |
@@ -212,6 +212,7 @@ What the server enforces, in code and covered by tests:
 - **No network by default.** `network="none"` removes the network adapter from the clone entirely.
 - **Web access without local access.** `network="web"` attaches the clone only to the dedicated host-only network, and the proxy decides every connection: public addresses and the allowed ports only. The destination rules, including IPv6 forms that hide an IPv4 address and names that resolve to private addresses, are covered by tests.
 - **One transfer folder.** `copy_in` and `copy_out` only accept host paths that resolve inside the transfer folder. Traversal, absolute paths elsewhere, and links pointing out of the folder are rejected.
+- **Folders are unpacked defensively.** A folder travels as one archive. Coming out of a sandbox, that archive is treated as hostile: only plain files and folders are created, each checked to land inside the target folder. Links, devices, absolute or `..` names, and names Windows cannot store are left out, and the reply says how many. Going in, a host folder that contains a link or junction is refused, so a link cannot pull files from outside the transfer folder into a sandbox.
 - **No host shell.** `vmrun` is called with an argument list, never through a shell. A command for the sandbox travels as file content, never as a command-line argument.
 - **Limits.** Every command has a timeout (1 to 3600 seconds) enforced inside the guest, with a second host-side timeout. Output is cut at 1 MB per stream. The number of sandboxes is capped. Sandboxes past the maximum age are destroyed, and sandboxes left behind by a crash or reboot are removed at startup.
 
@@ -231,6 +232,7 @@ What the server enforces, in code and covered by tests:
 - **Sandboxes outlive the server.** They are not destroyed when the MCP client exits (two clients may share them). They disappear when destroyed, when they exceed the maximum age, or at the next startup if they are no longer running.
 - **Resources.** Each sandbox uses the base VM's memory and CPU allocation, and its disk grows until it is destroyed. The cap limits the count, not the size.
 - **Races.** Path checks happen just before the copy. Another program on the host changing links inside the transfer folder at exactly that moment could defeat them.
+- **Folder copies are not exact mirrors.** Files copied in lose the executable flag (Windows has none). Copied out, links, special files (pipes, devices) and names not valid on Windows (containing `:` `?` `*` or a backslash, ending in a dot, or reserved names like `CON`) are left out. Two names differing only in case end up as one file. The limit is 100,000 files or 4 GB per copy.
 - **Screenshots are view-only.** There is no keyboard or mouse tool, so a graphical guest usually shows its login screen.
 
 ### Future improvements
@@ -238,7 +240,6 @@ What the server enforces, in code and covered by tests:
 - Isolating `web` sandboxes from each other.
 - An allowlist of sites for `web` mode.
 - Keyboard and mouse input.
-- Copying whole folders.
 - Publishing to PyPI.
 
 ## Development

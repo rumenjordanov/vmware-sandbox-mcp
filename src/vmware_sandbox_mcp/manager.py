@@ -6,6 +6,7 @@ import dataclasses
 import logging
 import re
 import secrets
+import shlex
 import shutil
 import tarfile
 import tempfile
@@ -16,6 +17,7 @@ from typing import Any
 
 from .audit import AuditLog
 from .config import Config
+from .folders import FolderError, pack_folder, unpack_folder
 from .paths import TransferPathError, resolve_in_transfer, same_path
 from .state import StateStore
 from .guest_run import RunResult, build_script, parse_result
@@ -29,8 +31,20 @@ MAX_RUN_TIMEOUT_SECONDS = 3600
 _ID = re.compile(r"^sbx-[0-9a-f]{8}$")
 
 
+FOLDER_TIMEOUT_SECONDS = 600
+
+
 class SandboxError(Exception):
     """A problem the agent can understand and act on."""
+
+
+@dataclasses.dataclass(frozen=True)
+class Transfer:
+    kind: str  # "file" or "folder"
+    files: int
+    bytes: int
+    path: Path | None = None  # where it was saved on the host (copy_out only)
+    skipped: int = 0  # entries of a folder from the sandbox that were not created on the host
 
 
 class SandboxManager:
@@ -165,22 +179,24 @@ class SandboxManager:
             },
         )
 
-    def copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> int:
-        """Copy one file from the transfer folder into the sandbox. Returns its size."""
+    def copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> Transfer:
+        """Copy a file or a folder from the transfer folder into the sandbox."""
         return self._audited(
             "copy_in",
             {"sandbox_id": sandbox_id, "host_path": host_path, "guest_path": guest_path},
             lambda: self._copy_in(sandbox_id, host_path, guest_path),
-            lambda size: {"bytes": size},
+            lambda t: {"kind": t.kind, "files": t.files, "bytes": t.bytes},
         )
 
-    def copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> tuple[Path, int]:
-        """Copy one file from the sandbox into the transfer folder. Returns (path, size)."""
+    def copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> Transfer:
+        """Copy a file or a folder from the sandbox into the transfer folder."""
         return self._audited(
             "copy_out",
             {"sandbox_id": sandbox_id, "guest_path": guest_path, "host_path": host_path},
             lambda: self._copy_out(sandbox_id, guest_path, host_path),
-            lambda saved: {"saved_to": str(saved[0]), "bytes": saved[1]},
+            lambda t: {
+                "kind": t.kind, "files": t.files, "bytes": t.bytes, "saved_to": str(t.path), "skipped": t.skipped
+            },
         )
 
     def screenshot(self, sandbox_id: str) -> bytes:
@@ -250,8 +266,10 @@ class SandboxManager:
         record = self._require(sandbox_id)
         if record.get("status") != "ready":
             raise SandboxError(f"Sandbox {sandbox_id} is not ready.")
+        return self._guest_exec(self._vmx(sandbox_id), command, timeout_seconds, self._proxy_env(record))
 
-        vmx = self._vmx(sandbox_id)
+    def _guest_exec(self, vmx: Path, command: str, timeout_seconds: int, env: dict[str, str] | None = None) -> RunResult:
+        """Run bash text in the guest. The text travels as file content, never on a command line."""
         token = secrets.token_hex(8)
         guest_script, guest_result = f"/tmp/.sbx-{token}.sh", f"/tmp/.sbx-{token}.tar"
         started = self._clock()
@@ -259,7 +277,7 @@ class SandboxManager:
         leftovers = [guest_script, guest_result]
         with tempfile.TemporaryDirectory(prefix="vmsandbox-run-") as tmp:
             host_script, host_result = Path(tmp) / "script.sh", Path(tmp) / "result.tar"
-            host_script.write_bytes(build_script(command, self._proxy_env(record)))
+            host_script.write_bytes(build_script(command, env))
             try:
                 self._vmrun.copy_to_guest(vmx, host_script, guest_script)
                 code = self._vmrun.run_program(
@@ -390,22 +408,55 @@ class SandboxManager:
             raise SandboxError("guest_path must be a full file path in the sandbox, like /home/debian/data.csv.")
         return guest_path
 
-    def _copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> int:
+    def _guest_folder_step(self, vmx: Path, command: str, what: str) -> None:
+        """Run one server-written tar command in the guest (the only agent text in it is a quoted path)."""
+        result = self._guest_exec(vmx, command, FOLDER_TIMEOUT_SECONDS)
+        if result.exit_code != 0:
+            detail = result.stderr.strip().splitlines()[-1:] or ["no details"]
+            raise SandboxError(f"Could not {what}: {detail[0]}")
+
+    def _copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> Transfer:
         vmx = self._ready_vmx(sandbox_id)
         source = self._host_path(host_path)
         target = self._guest_path(guest_path)
+        if source.is_dir():
+            return self._copy_folder_in(vmx, source, target)
         if not source.is_file():
-            raise SandboxError(f"No file at {host_path!r} in the transfer folder (folders cannot be copied).")
+            raise SandboxError(f"Nothing at {host_path!r} in the transfer folder.")
         try:
             self._vmrun.copy_to_guest(vmx, source, target)
         except VmrunError as exc:
             raise SandboxError(f"Could not copy the file into the sandbox: {exc}") from exc
-        return source.stat().st_size
+        return Transfer("file", 1, source.stat().st_size)
 
-    def _copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> tuple[Path, int]:
+    def _copy_folder_in(self, vmx: Path, source: Path, target: str) -> Transfer:
+        guest_tar = f"/tmp/.sbx-{secrets.token_hex(8)}.dir.tar"
+        with tempfile.TemporaryDirectory(prefix="vmsandbox-dir-") as tmp:
+            host_tar = Path(tmp) / "folder.tar"
+            try:
+                files, size = pack_folder(source, host_tar)
+                self._vmrun.copy_to_guest(vmx, host_tar, guest_tar)
+            except FolderError as exc:
+                raise SandboxError(str(exc)) from None
+            except (VmrunError, OSError) as exc:
+                raise SandboxError(f"Could not copy the folder into the sandbox: {exc}") from exc
+        quoted = shlex.quote(target)
+        try:
+            self._guest_folder_step(
+                vmx,
+                f"mkdir -p -- {quoted} && tar -xf {guest_tar} -C {quoted}",
+                "unpack the folder in the sandbox",
+            )
+        finally:
+            self._vmrun.delete_guest_file(vmx, guest_tar)
+        return Transfer("folder", files, size)
+
+    def _copy_out(self, sandbox_id: str, guest_path: str, host_path: str) -> Transfer:
         vmx = self._ready_vmx(sandbox_id)
         source = self._guest_path(guest_path)
         target = self._host_path(host_path)
+        if self._vmrun.guest_dir_exists(vmx, source):
+            return self._copy_folder_out(vmx, source, target, host_path)
         if target.is_dir():
             raise SandboxError(f"{host_path!r} is a folder; give a file name inside it.")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -413,7 +464,31 @@ class SandboxManager:
             self._vmrun.copy_from_guest(vmx, source, target)
         except VmrunError as exc:
             raise SandboxError(f"Could not copy the file out of the sandbox: {exc}") from exc
-        return target, target.stat().st_size
+        return Transfer("file", 1, target.stat().st_size, target)
+
+    def _copy_folder_out(self, vmx: Path, source: str, target: Path, host_path: str) -> Transfer:
+        if target.exists() and not target.is_dir():
+            raise SandboxError(f"{host_path!r} is an existing file, but the sandbox path is a folder.")
+        guest_tar = f"/tmp/.sbx-{secrets.token_hex(8)}.dir.tar"
+        try:
+            self._guest_folder_step(
+                vmx,
+                # --hard-dereference: store hard-linked files as ordinary files, not as links.
+                f"tar --hard-dereference -cf {guest_tar} -C {shlex.quote(source)} .",
+                "pack the folder in the sandbox",
+            )
+            with tempfile.TemporaryDirectory(prefix="vmsandbox-dir-") as tmp:
+                host_tar = Path(tmp) / "folder.tar"
+                try:
+                    self._vmrun.copy_from_guest(vmx, guest_tar, host_tar)
+                    files, size, skipped = unpack_folder(host_tar, target)
+                except FolderError as exc:
+                    raise SandboxError(str(exc)) from None
+                except (VmrunError, OSError, tarfile.TarError) as exc:
+                    raise SandboxError(f"Could not copy the folder out of the sandbox: {exc}") from exc
+        finally:
+            self._vmrun.delete_guest_file(vmx, guest_tar)
+        return Transfer("folder", files, size, target, skipped)
 
     def _screenshot(self, sandbox_id: str) -> bytes:
         vmx = self._ready_vmx(sandbox_id)

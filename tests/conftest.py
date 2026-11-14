@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import re
+import shlex
 import shutil
 import tarfile
 from pathlib import Path
@@ -70,6 +72,8 @@ class FakeVmrunProcess:
         self.next_result: tuple[bytes, bytes, int] = (b"", b"", 0)
         self.hang = False
         self.bad_login = False
+        self.guest_dirs: dict[str, bytes] = {}  # guest folder path -> its contents as a tar
+        self.tar_fails = False  # make the guest's tar commands fail with next_result
         self.screen = b"\x89PNG\r\n\x1a\nfake-image"
 
     def commands(self) -> list[str]:
@@ -119,8 +123,23 @@ class FakeVmrunProcess:
                 raise VmrunTimeout("simulated hang")
             _, _, script, out, secs = args
             text = self.guest_files[script].decode("utf-8")
-            self.ran.append((text[len(guest_run._WRAPPER):], int(secs)))
+            command_text = text[len(guest_run._WRAPPER):]
+            self.ran.append((command_text, int(secs)))
             stdout, stderr, exit_code = self.next_result
+            unpack = re.fullmatch(r"mkdir -p -- (.+) && tar -xf (\S+) -C (.+)\n", command_text)
+            pack = re.fullmatch(r"tar --hard-dereference -cf (\S+) -C (.+) \.\n", command_text)
+            if self.tar_fails:
+                pass
+            elif unpack:  # imitate tar in the guest
+                self.guest_dirs[shlex.split(unpack.group(1))[0]] = self.guest_files[unpack.group(2)]
+                stdout, stderr, exit_code = b"", b"", 0
+            elif pack:
+                folder = shlex.split(pack.group(2))[0]
+                if folder in self.guest_dirs:
+                    self.guest_files[pack.group(1)] = self.guest_dirs[folder]
+                    stdout, stderr, exit_code = b"", b"", 0
+                else:
+                    stdout, stderr, exit_code = b"", b"tar: cannot open: No such file or directory\n", 2
             self.guest_files[out] = make_result_tar(stdout, stderr, exit_code)
             del self.guest_files[script]  # the wrapper deletes itself
             return 0, ""
@@ -132,6 +151,9 @@ class FakeVmrunProcess:
                 return 255, "Error: A file was not found"
             Path(args[2]).write_bytes(self.guest_files[args[1]])
             return 0, ""
+        if command == "directoryExistsInGuest":
+            exists = args[1] in self.guest_dirs
+            return (0, "The directory exists.") if exists else (255, "The directory does not exist.")
         if command == "captureScreen":
             Path(args[1]).write_bytes(self.screen)
             return 0, ""

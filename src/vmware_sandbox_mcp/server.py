@@ -105,42 +105,52 @@ async def sandbox_run(sandbox_id: str, command: str, timeout_seconds: int = 60) 
 
 @mcp.tool()
 async def sandbox_copy_in(sandbox_id: str, host_path: str, guest_path: str) -> str:
-    """Copy one file from the user's computer into a sandbox.
+    """Copy a file or a whole folder from the user's computer into a sandbox.
 
-    Use this to give the sandbox a file to work on (a script, a dataset, an archive).
-    Only files inside the user's designated transfer folder can be copied; nothing else
-    on the user's computer is reachable.
+    Use this to give the sandbox something to work on (a script, a dataset, a project
+    folder). Only things inside the user's designated transfer folder can be copied;
+    nothing else on the user's computer is reachable.
 
-    host_path: the file to copy, relative to the transfer folder (for example
-    "data/input.csv"). Paths that leave the transfer folder are rejected.
-    guest_path: full destination path of the file inside the sandbox (for example
-    "/home/debian/input.csv"). The destination folder must already exist.
+    host_path: the file or folder to copy, relative to the transfer folder (for example
+    "data/input.csv" or "myproject"). Paths that leave the transfer folder are rejected.
+    guest_path: full destination path inside the sandbox. For a file, the path of the
+    file itself (for example "/home/debian/input.csv"); its folder must already exist.
+    For a folder, the path the folder should have (for example "/home/debian/myproject");
+    it is created if missing, and the folder's contents are placed inside it.
 
-    Copies a single file, not a folder; pack folders into an archive first.
-    Returns a short confirmation with the file size.
+    Folders are copied with everything in them. Files arrive without the executable
+    flag (use chmod +x if needed). A folder that contains links is refused.
+    Returns a short confirmation with the number of files and the size.
     """
-    size = await _call(lambda: _manager.copy_in(sandbox_id, host_path, guest_path))  # type: ignore[union-attr]
-    return f"Copied {size} bytes into the sandbox at {guest_path}."
+    done = await _call(lambda: _manager.copy_in(sandbox_id, host_path, guest_path))  # type: ignore[union-attr]
+    if done.kind == "folder":
+        return f"Copied folder ({done.files} files, {done.bytes} bytes) into the sandbox at {guest_path}."
+    return f"Copied {done.bytes} bytes into the sandbox at {guest_path}."
 
 
 @mcp.tool()
 async def sandbox_copy_out(sandbox_id: str, guest_path: str, host_path: str) -> str:
-    """Copy one file from a sandbox to the user's computer.
+    """Copy a file or a whole folder from a sandbox to the user's computer.
 
-    Use this to save a result (a report, a built program, a log) before destroying the
-    sandbox, since everything inside a sandbox is lost when it is destroyed. Files can only
-    be written inside the user's designated transfer folder.
+    Use this to save results (a report, a built program, a log, an output folder) before
+    destroying the sandbox, since everything inside a sandbox is lost when it is destroyed.
+    Things can only be written inside the user's designated transfer folder.
 
-    guest_path: full path of the file inside the sandbox (for example "/home/debian/out.txt").
+    guest_path: full path of the file or folder inside the sandbox (for example
+    "/home/debian/out.txt" or "/home/debian/build").
     host_path: where to save it, relative to the transfer folder (for example
-    "results/out.txt"). Missing folders are created; an existing file with that name is
-    replaced. Paths that leave the transfer folder are rejected.
+    "results/out.txt" or "results/build"). Missing folders are created; existing files
+    with the same names are replaced. Paths that leave the transfer folder are rejected.
 
-    Copies a single file, not a folder; pack folders into an archive first (for example with tar).
-    Returns the full path of the saved file on the user's computer and its size.
+    When copying a folder, its contents are placed inside host_path. Links and files
+    whose names are not valid on the user's computer are left out; the reply says how many.
+    Returns the full path where it was saved, the number of files and the size.
     """
-    path, size = await _call(lambda: _manager.copy_out(sandbox_id, guest_path, host_path))  # type: ignore[union-attr]
-    return f"Saved {size} bytes to {path}."
+    done = await _call(lambda: _manager.copy_out(sandbox_id, guest_path, host_path))  # type: ignore[union-attr]
+    if done.kind == "folder":
+        note = f" {done.skipped} entries were left out (links or unsupported names)." if done.skipped else ""
+        return f"Saved folder ({done.files} files, {done.bytes} bytes) to {done.path}.{note}"
+    return f"Saved {done.bytes} bytes to {done.path}."
 
 
 @mcp.tool()

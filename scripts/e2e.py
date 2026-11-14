@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -125,6 +126,24 @@ def main() -> int:
         check("path traversal out of the transfer folder is rejected",
               bool(escape.get("isError")) and not (transfer.parent / "e2e-escape.txt").exists(), text(escape))
 
+        folder = transfer / "e2e-folder"
+        (folder / "sub dir").mkdir(parents=True, exist_ok=True)
+        (folder / "a.txt").write_text("alpha\n", encoding="utf-8")
+        (folder / "sub dir" / "b.txt").write_text("beta\n", encoding="utf-8")
+        sent = client.tool("sandbox_copy_in", sandbox_id=sandbox_id, host_path="e2e-folder", guest_path="/tmp/e2e folder")
+        check("sandbox_copy_in copies a folder", not sent.get("isError") and "2 files" in text(sent), text(sent))
+        client.tool("sandbox_run", sandbox_id=sandbox_id, timeout_seconds=30, command=(
+            "cd '/tmp/e2e folder' && cat a.txt 'sub dir/b.txt' > joined.txt && ln -s /etc/passwd leak && echo x > 'bad:name'"))
+        got = client.tool("sandbox_copy_out", sandbox_id=sandbox_id, guest_path="/tmp/e2e folder", host_path="e2e-folder-back")
+        back = transfer / "e2e-folder-back"
+        check("sandbox_copy_out copies a folder", not got.get("isError") and "3 files" in text(got), text(got))
+        check("folder made the round trip",
+              (back / "joined.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
+              and (back / "sub dir" / "b.txt").read_text(encoding="utf-8") == "beta\n")
+        check("links and unusable names from the sandbox are left out",
+              "2 entries were left out" in text(got) and sorted(p.name for p in back.iterdir()) == ["a.txt", "joined.txt", "sub dir"],
+              text(got))
+
         shot = client.tool("sandbox_screenshot", sandbox_id=sandbox_id)
         images = [c for c in shot["content"] if c["type"] == "image"]
         check("sandbox_screenshot returns a PNG",
@@ -142,7 +161,8 @@ def main() -> int:
         mine = [e for e in entries if e.get("sandbox_id") == sandbox_id]
         check("audit log has one entry per operation, in order",
               [e["event"] for e in mine] == ["create", "run", "run", "run", "copy_in", "run",
-                                             "copy_out", "copy_out", "screenshot", "destroy"],
+                                             "copy_out", "copy_out", "copy_in", "run", "copy_out",
+                                             "screenshot", "destroy"],
               [e["event"] for e in mine])
         check("audit log records the command text and exit code",
               (mine[1]["command"], mine[1]["exit_code"]) == ("echo out; echo err >&2; exit 3", 3), mine[1])
@@ -178,6 +198,8 @@ def main() -> int:
         client.close()
         for name in ("e2e-in.txt", "e2e-out.txt"):
             (transfer / name).unlink(missing_ok=True)
+        for name in ("e2e-folder", "e2e-folder-back"):
+            shutil.rmtree(transfer / name, ignore_errors=True)
 
 
 if __name__ == "__main__":

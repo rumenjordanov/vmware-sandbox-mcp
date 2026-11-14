@@ -35,6 +35,7 @@ _COMMANDS: dict[str, str] = {
     "CopyFileFromHostToGuest": _CLONE,
     "CopyFileFromGuestToHost": _CLONE,
     "deleteFileInGuest": _CLONE,
+    "directoryExistsInGuest": _CLONE,
     "captureScreen": _CLONE,
 }
 _GUEST_COMMANDS = {
@@ -43,6 +44,7 @@ _GUEST_COMMANDS = {
     "CopyFileFromHostToGuest",
     "CopyFileFromGuestToHost",
     "deleteFileInGuest",
+    "directoryExistsInGuest",
 }
 
 
@@ -197,6 +199,10 @@ class VmrunClient:
 
     def delete_guest_file(self, vmx: str | os.PathLike[str], guest_path: str) -> None:
         self._run("deleteFileInGuest", vmx, guest_path, timeout=30, check=False)
+
+    def guest_dir_exists(self, vmx: str | os.PathLike[str], guest_path: str) -> bool:
+        code, _ = self._run("directoryExistsInGuest", vmx, guest_path, timeout=30, check=False)
+        return code == 0
 
     def capture_screen(self, vmx: str | os.PathLike[str], host_png: str | os.PathLike[str]) -> None:
         self._run("captureScreen", vmx, str(host_png), timeout=60)
