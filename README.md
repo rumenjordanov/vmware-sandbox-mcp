@@ -10,7 +10,7 @@ This is deliberately **not** a general VMware management server. The agent never
 
 The agent then:
 
-1. calls `sandbox_create(network="nat")` and gets `sbx-3f9a1c2e` about 25 seconds later;
+1. calls `sandbox_create(network="web")` and gets `sbx-3f9a1c2e` about 25 seconds later;
 2. calls `sandbox_copy_in` to copy `install.sh` from your transfer folder into the sandbox;
 3. calls `sandbox_run` to execute it, then again to inspect new files, processes and services;
 4. calls `sandbox_copy_out` to save a log of what changed into your transfer folder;
@@ -20,13 +20,23 @@ The agent then:
 
 | Tool | What it does |
 |---|---|
-| `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default) or `"nat"`. Returns a `sandbox_id`. |
+| `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"` (see [Network modes](#network-modes)). Returns a `sandbox_id`. |
 | `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
 | `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies one file from the transfer folder into the sandbox. |
 | `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies one file from the sandbox into the transfer folder. |
 | `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
 | `sandbox_destroy(sandbox_id)` | Powers off and deletes the sandbox. |
 | `sandbox_list()` | Active sandboxes with age and network mode. |
+
+## Network modes
+
+| Mode | What the sandbox can reach | Host setup |
+|---|---|---|
+| `none` (default) | Nothing. The sandbox has no network adapter. | none |
+| `web` | Public websites over HTTP and HTTPS, through a filtering proxy on the host. Not your computer, not your home network, no other protocols. | one-time, needs admin rights (see [Web mode setup](#web-mode-setup)) |
+| `nat` | The whole internet, **and also your host and your local network**. | none |
+
+Use `web` whenever a task needs to download something. Keep `nat` for code you trust.
 
 ## Requirements
 
@@ -63,7 +73,7 @@ The server speaks MCP over stdio and is normally started by your MCP client (see
    echo 'debian ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sandbox
    chmod 440 /etc/sudoers.d/sandbox
    ```
-   Installing packages also needs a sandbox created with `network="nat"`.
+   Installing packages also needs a sandbox created with `network="web"` or `"nat"`.
 5. **Shut the VM down completely** (not suspend), then take a snapshot, for example named `clean`. Every sandbox is a linked clone of this snapshot.
 6. Do not delete or move the base VM or that snapshot while sandboxes exist; linked clones read from it.
 
@@ -86,12 +96,38 @@ All configuration is through environment variables. The server refuses to start 
 | `VMSANDBOX_BOOT_TIMEOUT_SECONDS` | no | `180` | How long `sandbox_create` waits for the guest to become ready. |
 | `VMSANDBOX_VMRUN_PATH` | no | auto-detected | Full path of `vmrun` if it is not in the standard location. |
 | `VMSANDBOX_AUDIT_LOG` | no | `audit.jsonl` in the clones folder | File the audit log is appended to. |
+| `VMSANDBOX_WEB_VNET` | no | | Dedicated host-only VMware network for `web` sandboxes, for example `VMnet9`. Setting it (together with the next one) switches `web` mode on. |
+| `VMSANDBOX_WEB_PROXY_HOST` | no | | This computer's IP address on that network. The proxy listens only there. |
+| `VMSANDBOX_WEB_PROXY_PORT` | no | `3128` | Port the proxy listens on. |
+| `VMSANDBOX_WEB_PORTS` | no | `80,443` | Destination ports `web` sandboxes may connect to. |
 
 The clones folder, the transfer folder and the base VM folder must not overlap; the server checks this at startup.
 
+### Web mode setup
+
+`web` mode gives a sandbox web access without letting it reach your computer or your local network. It works like this:
+
+- The sandbox is attached to a dedicated host-only VMware network. That network has no gateway, so there is no route to anywhere.
+- The server runs a small proxy on your computer's address on that network. It forwards HTTP and HTTPS to public internet addresses and refuses private, local and reserved addresses, your computer's own addresses, and ports other than 80 and 443. Names are resolved by the proxy, and it connects to exactly the address it checked.
+- Windows Firewall rules, limited to that one network adapter, block everything from the sandbox to your computer except the proxy port.
+- Commands run in a `web` sandbox get `http_proxy` / `https_proxy` set automatically, so `curl`, `wget`, `pip` and `git` over https work. With `sudo`, use `sudo -E` so the variables are kept, for example `sudo -E apt-get -y install jq`.
+
+Setup, once, with administrator rights:
+
+1. **Create the network.** In VMware Workstation: Edit > Virtual Network Editor > Change Settings > Add Network. Pick an unused one from VMnet2 to VMnet19 (not VMnet8), set it to **Host-only**, tick **Connect a host virtual adapter to this network** and **Use local DHCP service**, then Apply. Applying restarts VMware's network services for a moment, so do it while your other VMs are not busy on the network.
+2. **Create the firewall rules.** In an elevated PowerShell, from the project folder:
+   ```
+   .\scripts\setup-web-network.ps1 -Vnet VMnet9
+   ```
+   It prints the two settings to use. Every rule is limited to that adapter and is in the firewall group `vmware-sandbox-mcp`; `-Remove` deletes them again.
+3. **Add the settings** it printed (`VMSANDBOX_WEB_VNET`, `VMSANDBOX_WEB_PROXY_HOST`) to the server's environment.
+4. **Verify.** `vmware-sandbox-mcp doctor` creates a `web` sandbox and checks from inside it that a public site loads, that the proxy refuses private addresses, that your computer's file-sharing ports are unreachable, and that there is no direct route out.
+
+The server refuses to start in `web` mode on VMnet0 (bridged), VMnet1 or VMnet8 (NAT), or on any network that VMware records as NAT.
+
 ### Audit log
 
-Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, files copied and screenshots taken. Refused and failed operations are recorded too, with the reason. Example:
+Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, files copied, screenshots taken, and every request a `web` sandbox makes through the proxy (destination, address, allowed or refused). Refused and failed operations are recorded too, with the reason. Example:
 
 ```json
 {"time": "2026-11-14T12:08:19Z", "event": "run", "sandbox_id": "sbx-cbe8c2a2", "command": "echo out; echo err >&2; exit 3", "timeout_seconds": 30, "ok": true, "seconds": 4.1, "exit_code": 3, "timed_out": false, "stdout_bytes": 4, "stderr_bytes": 4}
@@ -174,6 +210,7 @@ What the server enforces, in code and covered by tests:
 - **It only deletes what it marked.** A folder is removed only if it is directly inside the clones folder, is named like a sandbox id, and contains the marker file the server wrote. Anything else in the clones folder is left alone.
 - **Isolation before first boot.** Each clone's `.vmx` is rewritten before it ever starts: shared folders off, clipboard and drag-and-drop off, and the CD-ROM, USB controller, sound card and serial/parallel ports removed.
 - **No network by default.** `network="none"` removes the network adapter from the clone entirely.
+- **Web access without local access.** `network="web"` attaches the clone only to the dedicated host-only network, and the proxy decides every connection: public addresses and the allowed ports only. The destination rules, including IPv6 forms that hide an IPv4 address and names that resolve to private addresses, are covered by tests.
 - **One transfer folder.** `copy_in` and `copy_out` only accept host paths that resolve inside the transfer folder. Traversal, absolute paths elsewhere, and links pointing out of the folder are rejected.
 - **No host shell.** `vmrun` is called with an argument list, never through a shell. A command for the sandbox travels as file content, never as a command-line argument.
 - **Limits.** Every command has a timeout (1 to 3600 seconds) enforced inside the guest, with a second host-side timeout. Output is cut at 1 MB per stream. The number of sandboxes is capped. Sandboxes past the maximum age are destroyed, and sandboxes left behind by a crash or reboot are removed at startup.
@@ -181,7 +218,12 @@ What the server enforces, in code and covered by tests:
 ### Limits of this model, stated honestly
 
 - **The boundary is VMware's.** A sandbox is exactly as contained as a VMware virtual machine. A hypervisor escape vulnerability would defeat it. Keep Workstation updated.
-- **NAT is not internet-only.** A sandbox created with `network="nat"` can reach the internet, **and also your host and other devices on your local network** (routers, NAS, printers, other computers), through VMware's NAT. Do not use `nat` for code you consider actively hostile.
+- **NAT is not internet-only.** A sandbox created with `network="nat"` can reach the internet, **and also your host and other devices on your local network** (routers, NAS, printers, other computers), through VMware's NAT. Do not use `nat` for code you consider actively hostile; use `web`.
+- **Web mode depends on the host setup.** The proxy's rules are enforced by this project's code, but keeping the sandbox away from your computer's other ports is done by the Windows Firewall rules from the setup script. If they are removed or the network is reconfigured, that protection is gone; `doctor` detects it.
+- **Web mode still lets data out.** Code in a `web` sandbox can send anything it has to any public website. It protects your network, not the secrecy of what you put in the sandbox.
+- **Web mode is web only.** No ping, no DNS lookups in the sandbox, no SSH or other protocols, and one request per connection for plain HTTP. Programs that ignore the proxy variables have no network.
+- **Web sandboxes can see each other.** They share one private network. The proxy only works while the server is running.
+- **The proxy is code on your host that reads untrusted input.** It is small and tested, but it is attack surface that `none` and `nat` do not have.
 - **What comes out is untrusted.** Files copied out of a sandbox, and the text a command prints, were produced by whatever ran in there. Do not open or run copied-out files without thought, and be aware that command output could contain text designed to mislead the agent.
 - **The transfer folder is fully exposed to the agent.** It can read every file in it and overwrite files there. Keep nothing in it that you would not hand to the agent.
 - **The guest password is visible locally.** `vmrun` only accepts it as a command-line argument, so other processes of local users can see it while a call runs. It may also sit in your MCP client's configuration file.
@@ -193,7 +235,8 @@ What the server enforces, in code and covered by tests:
 
 ### Future improvements
 
-- Block access to the host and local network in NAT mode (dedicated virtual network with firewall rules).
+- Isolating `web` sandboxes from each other.
+- An allowlist of sites for `web` mode.
 - Keyboard and mouse input.
 - Copying whole folders.
 - Publishing to PyPI.

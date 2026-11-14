@@ -50,6 +50,10 @@ class SandboxManager:
         self._clock = clock
         self._sleep = sleep
 
+    @property
+    def config(self) -> Config:
+        return self._config
+
     # ---- helpers ---------------------------------------------------------
 
     def _dir(self, sandbox_id: str) -> Path:
@@ -192,7 +196,11 @@ class SandboxManager:
 
     def _create(self, network: str) -> str:
         if network not in NETWORK_MODES:
-            raise SandboxError(f"network must be 'none' or 'nat', got {network!r}.")
+            raise SandboxError(f"network must be 'none', 'web' or 'nat', got {network!r}.")
+        if network == "web" and not self._config.web_vnet:
+            raise SandboxError(
+                "network 'web' is not set up on this computer. Use 'none', or 'nat' if the task needs internet."
+            )
 
         self.reap_expired()  # free slots held by sandboxes past their maximum age
         sandbox_id = f"sbx-{secrets.token_hex(4)}"
@@ -213,7 +221,7 @@ class SandboxManager:
             folder.mkdir()
             (folder / MARKER).write_text("created by vmware-sandbox-mcp\n", encoding="utf-8")
             self._vmrun.clone(vmx, self._config.snapshot, sandbox_id)
-            harden_vmx(vmx, self._config.clones_dir, network)
+            harden_vmx(vmx, self._config.clones_dir, network, self._config.web_vnet)
             self._vmrun.start(vmx)
             self._wait_ready(vmx)
         except Exception as exc:
@@ -239,7 +247,8 @@ class SandboxManager:
             raise SandboxError(f"timeout_seconds must be between 1 and {MAX_RUN_TIMEOUT_SECONDS}.")
         if not command.strip():
             raise SandboxError("command is empty.")
-        if self._require(sandbox_id).get("status") != "ready":
+        record = self._require(sandbox_id)
+        if record.get("status") != "ready":
             raise SandboxError(f"Sandbox {sandbox_id} is not ready.")
 
         vmx = self._vmx(sandbox_id)
@@ -250,7 +259,7 @@ class SandboxManager:
         leftovers = [guest_script, guest_result]
         with tempfile.TemporaryDirectory(prefix="vmsandbox-run-") as tmp:
             host_script, host_result = Path(tmp) / "script.sh", Path(tmp) / "result.tar"
-            host_script.write_bytes(build_script(command))
+            host_script.write_bytes(build_script(command, self._proxy_env(record)))
             try:
                 self._vmrun.copy_to_guest(vmx, host_script, guest_script)
                 code = self._vmrun.run_program(
@@ -282,6 +291,14 @@ class SandboxManager:
         elapsed = self._clock() - started
         timed_out = result.exit_code == 124 or (result.exit_code == 137 and elapsed >= timeout_seconds)
         return dataclasses.replace(result, timed_out=timed_out)
+
+    def _proxy_env(self, record: dict[str, Any]) -> dict[str, str]:
+        """Point programs in a "web" sandbox at the filtering proxy; it is their only way out."""
+        if record.get("network") != "web" or not self._config.web_proxy_host:
+            return {}
+        url = f"http://{self._config.web_proxy_host}:{self._config.web_proxy_port}"
+        names = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
+        return {**{name: url for name in names}, "no_proxy": "localhost,127.0.0.1", "NO_PROXY": "localhost,127.0.0.1"}
 
     # ---- limits and cleanup ----------------------------------------------
 

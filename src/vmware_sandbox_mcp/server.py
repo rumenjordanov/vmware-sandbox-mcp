@@ -19,6 +19,7 @@ from . import __version__
 from .audit import AuditLog
 from .config import ConfigError, load_config
 from .manager import SandboxError, SandboxManager
+from .proxy import WebProxy
 from .state import StateStore
 from .vmrun import VmrunClient
 
@@ -59,15 +60,22 @@ async def _call(fn: Callable[..., T], *args: Any) -> T:
 
 
 @mcp.tool()
-async def sandbox_create(network: Literal["none", "nat"] = "none") -> str:
+async def sandbox_create(network: Literal["none", "web", "nat"] = "none") -> str:
     """Create a fresh, disposable Linux computer (a "sandbox") and wait until it is ready to use.
 
     Use this before running untrusted code, installing packages, or trying anything you
     would not want to do on the user's real computer. Every sandbox starts from the same
     clean state and is completely separate from the user's machine and from other sandboxes.
 
-    network: "none" (default) gives the sandbox no network at all. "nat" gives it internet
-    access; only choose it when the task needs to download something.
+    network: "none" (default) gives the sandbox no network at all. Choose another mode only
+    when the task needs to download something:
+    - "web": internet for web downloads only (HTTP and HTTPS), and nothing else: the user's
+      own computer and home network stay unreachable. Prefer this. Standard tools (curl,
+      wget, pip, git over https) work as usual; with sudo use `sudo -E`, for example
+      `sudo -E apt-get -y install <package>`. ping and non-web protocols do not work.
+      It may not be set up on this computer; the error will say so.
+    - "nat": full internet access. It can also reach the user's own computer and home
+      network, so never use it for code you do not trust.
 
     Takes up to a few minutes. Returns the sandbox_id to pass to the other sandbox tools.
     Destroy the sandbox with sandbox_destroy when you are finished.
@@ -202,6 +210,11 @@ def main() -> None:
     _manager.cleanup_orphans()
     _manager.reap_expired()
     threading.Thread(target=_reaper_loop, args=(_manager,), daemon=True, name="sandbox-reaper").start()
+    config = _manager.config
+    if config.web_vnet and config.web_proxy_host:
+        WebProxy(
+            config.web_proxy_host, config.web_proxy_port, config.web_ports, AuditLog(config.audit_log)
+        ).start_with_retry()
     mcp.run()
 
 

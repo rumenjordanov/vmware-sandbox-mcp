@@ -161,6 +161,102 @@ def test_create_reports_rejected_login_quickly(env):
     assert env.manager.list() == []
 
 
+# ---- network="web" checks ---------------------------------------------------
+
+GOOD_WEB = {
+    "public": "200", "private": "refused", "hostself": "refused", "badport": "refused",
+    "port135": "closed", "port139": "closed", "port445": "closed", "port3128": "open", "route": "no",
+}
+
+
+class FakeProxy:
+    def __init__(self, error=None):
+        self.error, self.started, self.stopped = error, False, False
+
+    def start(self):
+        if self.error:
+            raise self.error
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def webdoc(doc, monkeypatch):
+    monkeypatch.setattr("vmware_sandbox_mcp.config.vnet_problem", lambda vnet: None)
+    doc.settings["VMSANDBOX_WEB_VNET"] = "VMnet9"
+    doc.settings["VMSANDBOX_WEB_PROXY_HOST"] = "192.168.50.1"
+    doc.proxy = FakeProxy()
+
+    def run_web(**seen):
+        lines = "".join(f"{key}={value}\n" for key, value in {**GOOD_WEB, **seen}.items())
+        doc.fake.next_result = (b"doctor-ok\nsudo-no\n" + lines.encode(), b"", 0)
+        return doc.run(proxy_factory=lambda config: doc.proxy)
+
+    doc.run_web = run_web
+    return doc
+
+
+def test_web_checks_are_skipped_when_web_is_not_configured(doc):
+    _, results = doc.run()
+    assert "Web proxy" not in results
+
+
+def test_healthy_web_setup_passes(webdoc):
+    code, results = webdoc.run_web()
+    assert code == 0
+    for title in ("Web proxy", "Web sandbox reaches the proxy", "Web access through the proxy",
+                  "Proxy refuses private addresses and other ports", "Host is shielded from web sandboxes",
+                  "No direct route out"):
+        assert results[title] == "OK", title
+    assert webdoc.proxy.started and webdoc.proxy.stopped
+    assert not webdoc.fake.running
+    assert [p.name for p in webdoc.clones.iterdir() if p.is_dir()] == []
+
+
+def test_web_test_sandbox_uses_the_dedicated_network(webdoc):
+    webdoc.run_web()
+    assert any("export http_proxy=http://192.168.50.1:3128" in script for script, _ in webdoc.fake.ran)
+
+
+@pytest.mark.parametrize("seen,failing", [
+    ({"port445": "open"}, "Host is shielded from web sandboxes"),
+    ({"port135": "open"}, "Host is shielded from web sandboxes"),
+    ({"private": "200"}, "Proxy refuses private addresses and other ports"),
+    ({"hostself": "403"}, "Proxy refuses private addresses and other ports"),
+    ({"badport": ""}, "Proxy refuses private addresses and other ports"),
+    ({"public": "refused"}, "Web access through the proxy"),
+    ({"public": "502"}, "Web access through the proxy"),
+    ({"public": ""}, "Web access through the proxy"),
+    ({"route": "yes"}, "No direct route out"),
+    ({"port3128": "closed"}, "Web sandbox reaches the proxy"),
+])
+def test_each_web_problem_is_reported(webdoc, seen, failing):
+    code, results = webdoc.run_web(**seen)
+    assert code == 1 and results[failing] == "FAIL"
+    assert not webdoc.fake.running and webdoc.proxy.stopped
+
+
+def test_missing_probe_output_counts_as_failure(webdoc):
+    webdoc.fake.next_result = (b"doctor-ok\nsudo-no\n", b"", 0)
+    code, results = webdoc.run(proxy_factory=lambda config: webdoc.proxy)
+    assert code == 1 and results["Web sandbox reaches the proxy"] == "FAIL"
+
+
+def test_proxy_address_not_on_this_computer_is_reported(webdoc):
+    webdoc.proxy = FakeProxy(OSError(10049, "address not valid in its context"))
+    code, results = webdoc.run_web()
+    assert code == 1 and results["Web proxy"] == "FAIL"
+    assert sum(1 for cmd in webdoc.fake.commands() if cmd == "clone") == 1  # only the plain boot test
+
+
+def test_proxy_already_served_by_a_running_server_is_fine(webdoc):
+    webdoc.proxy = FakeProxy(OSError(10048, "address already in use"))
+    code, results = webdoc.run_web()
+    assert code == 0 and results["Web proxy"] == "OK"
+
+
 def test_cli_dispatches_to_doctor(monkeypatch):
     seen = {}
     monkeypatch.setattr("vmware_sandbox_mcp.doctor.main", lambda argv: seen.setdefault("argv", argv) and 0 or 0)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .paths import resolve, same_path
 
-NETWORK_MODES = ("none", "nat")
+NETWORK_MODES = ("none", "nat", "web")
 
 # Whole device families removed from every clone.
 _DROP_PREFIXES = ("ethernet", "sharedfolder", "usb", "ehci", "sound", "serial", "parallel", "floppy")
@@ -38,11 +38,24 @@ _NAT = {
     "ethernet0.addressType": "generated",
 }
 _NO_NETWORK = {"ethernet0.present": "FALSE"}
+_VNET = re.compile(r"^VMnet([2-7]|9|1[0-9])$")  # never bridged (0), shared host-only (1) or NAT (8)
+
+
+def _web(vnet: str | None) -> dict[str, str]:
+    if vnet is None or not _VNET.match(vnet):
+        raise ValueError(f"network 'web' needs a dedicated host-only VMware network, got {vnet!r}")
+    return {
+        "ethernet0.present": "TRUE",
+        "ethernet0.connectionType": "custom",
+        "ethernet0.vnet": vnet,
+        "ethernet0.virtualDev": "e1000",
+        "ethernet0.addressType": "generated",
+    }
 
 _LINE = re.compile(r'^\s*([^=\s#]+)\s*=\s*"(.*)"\s*$')
 
 
-def harden_vmx_text(text: str, network: str) -> str:
+def harden_vmx_text(text: str, network: str, vnet: str | None = None) -> str:
     if network not in NETWORK_MODES:
         raise ValueError(f"network must be one of {NETWORK_MODES}, got {network!r}")
 
@@ -59,7 +72,8 @@ def harden_vmx_text(text: str, network: str) -> str:
         if key.lower().endswith(".devicetype") and value.lower().startswith("cdrom")
     }
 
-    settings = {**_ISOLATION, **(_NAT if network == "nat" else _NO_NETWORK)}
+    adapter = _NAT if network == "nat" else _web(vnet) if network == "web" else _NO_NETWORK
+    settings = {**_ISOLATION, **adapter}
     overridden = {key.lower() for key in settings}
 
     kept: list[str] = []
@@ -74,9 +88,14 @@ def harden_vmx_text(text: str, network: str) -> str:
     return "\n".join(kept) + "\n"
 
 
-def harden_vmx(vmx: str | os.PathLike[str], clones_dir: str | os.PathLike[str], network: str) -> None:
+def harden_vmx(
+    vmx: str | os.PathLike[str],
+    clones_dir: str | os.PathLike[str],
+    network: str,
+    vnet: str | None = None,
+) -> None:
     path = resolve(vmx)
     if not same_path(path.parent.parent, clones_dir) or path.suffix.lower() != ".vmx":
         raise PermissionError(f"Refused to edit {vmx}: not a sandbox .vmx inside {clones_dir}.")
     text = Path(path).read_text(encoding="utf-8")
-    Path(path).write_text(harden_vmx_text(text, network), encoding="utf-8")
+    Path(path).write_text(harden_vmx_text(text, network, vnet), encoding="utf-8")

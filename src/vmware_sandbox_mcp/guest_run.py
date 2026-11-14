@@ -16,7 +16,9 @@ command line, on the host or in the guest, so no quoting can go wrong.
 from __future__ import annotations
 
 import io
+import shlex
 import tarfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 OUTPUT_LIMIT_BYTES = 1_048_576
@@ -50,8 +52,10 @@ class RunResult:
     stderr_truncated: bool
 
 
-def build_script(command: str) -> bytes:
-    return (_WRAPPER + command.replace("\r\n", "\n") + "\n").encode("utf-8")
+def build_script(command: str, env: Mapping[str, str] | None = None) -> bytes:
+    """env holds server-chosen variables (never agent text) exported before the command."""
+    exports = "".join(f"export {name}={shlex.quote(value)}\n" for name, value in (env or {}).items())
+    return (_WRAPPER + exports + command.replace("\r\n", "\n") + "\n").encode("utf-8")
 
 
 def parse_result(tar_bytes: bytes) -> RunResult:

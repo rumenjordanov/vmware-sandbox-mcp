@@ -17,11 +17,32 @@ from pathlib import Path
 from .audit import AuditLog
 from .config import Config, ConfigError, load_config
 from .manager import SandboxError, SandboxManager
+from .proxy import WebProxy
 from .state import StateStore
 from .vmrun import Runner, VmrunClient, VmrunError, subprocess_runner
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
 _PROBE = "echo doctor-ok; if sudo -n true 2>/dev/null; then echo sudo-yes; else echo sudo-no; fi"
+
+# Run inside a "web" sandbox. __H__/__P__ are the proxy's address and port (from settings).
+_WEB_PROBE = r"""H=__H__; P=__P__
+ask() { # name url host -> name=<http status>, or name=refused when the proxy itself said no
+  reply=$(timeout 25 bash -c 'exec 3<>/dev/tcp/'"$H"'/'"$P"' && printf "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n" "$0" "$1" >&3 && head -c 2000 <&3' "$2" "$3" 2>/dev/null | tr -d '\r')
+  case "$reply" in
+    *"vmware-sandbox-mcp proxy:"*) echo "$1=refused" ;;
+    *) echo "$1=$(echo "$reply" | head -n1 | cut -d' ' -f2)" ;;
+  esac
+}
+port() {
+  if timeout 3 bash -c "exec 3<>/dev/tcp/$H/$1" 2>/dev/null; then echo "port$1=open"; else echo "port$1=closed"; fi
+}
+ask public http://example.com/ example.com
+ask private http://10.0.0.1/ 10.0.0.1
+ask hostself "http://$H/" "$H"
+ask badport http://example.com:22/ example.com
+port 135; port 139; port 445; port "$P"
+if ip -4 route show default | grep -q .; then echo route=yes; else echo route=no; fi
+"""
 
 
 def snapshot_powered_on(base_vmx: Path, snapshot: str) -> bool | None:
@@ -52,7 +73,16 @@ class Doctor:
         out: Callable[[str], None] = print,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        proxy_factory: Callable[[Config], WebProxy] | None = None,
     ) -> None:
+        self._proxy_factory = proxy_factory or (
+            lambda config: WebProxy(
+                config.web_proxy_host or "",
+                config.web_proxy_port,
+                config.web_ports,
+                AuditLog(config.audit_log),
+            )
+        )
         self._env, self._boot, self._runner = env, boot, runner
         self._out, self._clock, self._sleep = out, clock, sleep
         self.results: list[tuple[str, str]] = []
@@ -85,6 +115,8 @@ class Doctor:
                 self._report(SKIP, "Sandbox boot test", "skipped until the problems above are fixed")
             else:
                 self._check_boot(config, vmrun)
+                if config.web_vnet:
+                    self._check_web(config, vmrun)
 
         failed = sum(1 for status, _ in self.results if status == FAIL)
         self._out("")
@@ -160,14 +192,7 @@ class Doctor:
         return good
 
     def _check_boot(self, config: Config, vmrun: VmrunClient) -> None:
-        manager = SandboxManager(
-            config,
-            vmrun,
-            StateStore(config.clones_dir),
-            clock=self._clock,
-            sleep=self._sleep,
-            audit=AuditLog(config.audit_log, self._clock),
-        )
+        manager = self._manager(config, vmrun)
         self._out("       Creating a test sandbox (this can take a minute)...")
         started = self._clock()
         try:
@@ -185,6 +210,113 @@ class Doctor:
                 self._report(FAIL, "Cleanup", f"could not destroy test sandbox {sandbox_id}: {exc}")
             else:
                 self._report(OK, "Cleanup", "test sandbox destroyed")
+
+    def _manager(self, config: Config, vmrun: VmrunClient) -> SandboxManager:
+        return SandboxManager(
+            config,
+            vmrun,
+            StateStore(config.clones_dir),
+            clock=self._clock,
+            sleep=self._sleep,
+            audit=AuditLog(config.audit_log, self._clock),
+        )
+
+    def _check_web(self, config: Config, vmrun: VmrunClient) -> None:
+        """network="web": the proxy works, and nothing but the proxy is reachable."""
+        where = f"{config.web_proxy_host}:{config.web_proxy_port}"
+        proxy = self._proxy_factory(config)
+        try:
+            proxy.start()
+        except OSError as exc:
+            if getattr(exc, "errno", None) in (98, 10048) or getattr(exc, "winerror", None) == 10048:
+                proxy = None  # a running server instance already serves it
+                self._report(OK, "Web proxy", f"{where} is already served by a running server")
+            else:
+                self._report(
+                    FAIL,
+                    "Web proxy",
+                    f"cannot listen on {where} ({exc})",
+                    f"VMSANDBOX_WEB_PROXY_HOST must be this computer's address on {config.web_vnet}.",
+                )
+                return
+        else:
+            self._report(OK, "Web proxy", f"listening on {where}")
+
+        manager = self._manager(config, vmrun)
+        self._out("       Creating a test sandbox with network 'web'...")
+        try:
+            try:
+                sandbox_id = manager.create("web")
+            except SandboxError as exc:
+                self._report(FAIL, "Web sandbox", str(exc))
+                return
+            try:
+                probe = _WEB_PROBE.replace("__H__", config.web_proxy_host or "").replace(
+                    "__P__", str(config.web_proxy_port)
+                )
+                self._sleep(5)  # give the guest a moment to get its network address
+                result = manager.run(sandbox_id, probe, 180)
+                self._judge_web(dict(line.split("=", 1) for line in result.stdout.split() if "=" in line), config)
+            except SandboxError as exc:
+                self._report(FAIL, "Web sandbox", str(exc))
+            finally:
+                try:
+                    manager.destroy(sandbox_id)
+                except SandboxError as exc:
+                    self._report(FAIL, "Cleanup", f"could not destroy test sandbox {sandbox_id}: {exc}")
+        finally:
+            if proxy is not None:
+                proxy.stop()
+
+    def _judge_web(self, seen: dict[str, str], config: Config) -> None:
+        setup = "run scripts\\setup-web-network.ps1 as administrator (see README)."
+        if seen.get(f"port{config.web_proxy_port}") != "open":
+            self._report(
+                FAIL,
+                "Web sandbox reaches the proxy",
+                "a sandbox on the web network cannot connect to the proxy",
+                f"check that {config.web_vnet} has DHCP enabled, and {setup}",
+            )
+            return
+        self._report(OK, "Web sandbox reaches the proxy")
+
+        public = seen.get("public", "")
+        if public[:1] in ("2", "3"):
+            self._report(OK, "Web access through the proxy", f"example.com answered {public}")
+        else:
+            self._report(
+                FAIL,
+                "Web access through the proxy",
+                f"example.com answered {public or 'nothing'}",
+                "check this computer's own internet connection.",
+            )
+
+        refused = {name: seen.get(name, "") for name in ("private", "hostself", "badport")}
+        if all(answer == "refused" for answer in refused.values()):
+            self._report(OK, "Proxy refuses private addresses and other ports")
+        else:
+            self._report(FAIL, "Proxy refuses private addresses and other ports", f"got {refused}")
+
+        open_ports = [port for port in ("135", "139", "445") if seen.get(f"port{port}") != "closed"]
+        if open_ports:
+            self._report(
+                FAIL,
+                "Host is shielded from web sandboxes",
+                f"host ports {', '.join(open_ports)} are reachable from the sandbox",
+                setup,
+            )
+        else:
+            self._report(OK, "Host is shielded from web sandboxes", "file sharing and RPC ports are blocked")
+
+        if seen.get("route") == "no":
+            self._report(OK, "No direct route out", "the sandbox has no default gateway")
+        else:
+            self._report(
+                FAIL,
+                "No direct route out",
+                "the sandbox has a default gateway, so it may bypass the proxy",
+                f"{config.web_vnet} must be a host-only network without NAT.",
+            )
 
     def _check_guest(self, manager: SandboxManager, sandbox_id: str, config: Config) -> None:
         try:
