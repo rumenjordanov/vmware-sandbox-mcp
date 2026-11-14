@@ -52,7 +52,7 @@ For the first one, the agent:
 
 ```mermaid
 flowchart LR
-    A["AI agent<br>(Claude Code, Claude Desktop, ...)"] -- "MCP (stdio)" --> S["vmware-sandbox-mcp"]
+    A["AI agent<br>(Claude)"] -- "MCP (stdio)" --> S["vmware-sandbox-mcp"]
     S -- "clone from, never start" --> B[("base VM<br>clean snapshot")]
     S -- "allowlisted vmrun calls" --> C[("sandbox<br>linked clone")]
     C -- "web mode only" --> P["filtering proxy"]
