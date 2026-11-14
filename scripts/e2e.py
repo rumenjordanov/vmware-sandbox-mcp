@@ -149,6 +149,24 @@ def main() -> int:
         check("audit log records the refused path traversal",
               mine[7]["ok"] is False and mine[7]["host_path"] == "../e2e-escape.txt", mine[7])
         sandbox_id = None
+
+        if os.environ.get("VMSANDBOX_WEB_VNET"):
+            created = client.tool("sandbox_create", network="web")
+            check("sandbox_create(network='web') succeeds", not created.get("isError"), text(created))
+            sandbox_id = text(created).strip()
+            web = client.tool("sandbox_run", sandbox_id=sandbox_id, timeout_seconds=120, command=(
+                "sleep 5; wget -q -T 30 -O /dev/null https://example.com; echo public=$?; "
+                "wget -q -T 10 -t 1 -O /dev/null http://192.168.0.1/; echo private=$?; "
+                "timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; echo direct=$?; "
+                "ip route show default | wc -l"))["structuredContent"]
+            seen = web["stdout"].split()
+            check("web sandbox downloads from a public site through the proxy", "public=0" in seen, web)
+            check("web sandbox is refused a private address", "private=8" in seen, web)
+            check("web sandbox has no direct route to the internet", "direct=0" not in seen and seen[-1] == "0", web)
+            client.tool("sandbox_destroy", sandbox_id=sandbox_id)
+            sandbox_id = None
+        else:
+            print("  (network='web' not configured; skipping its checks)")
         print("PASS")
         return 0
     except AssertionError:
