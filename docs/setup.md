@@ -109,6 +109,10 @@ The server refuses to start in `web` mode on VMnet0 (bridged), VMnet1 or VMnet8 
 
 Off by default. With `VMSANDBOX_REMOTE_INPUT=on`, the agent can operate graphical programs: it looks with `sandbox_screenshot` and acts with `sandbox_click`, `sandbox_type` and `sandbox_key`. No change to the base VM and no admin rights are needed.
 
+<img src="images/desktop-menu.png" alt="A sandbox desktop after the agent clicked a window's menu button" width="640">
+
+<sub>After one `sandbox_click` on the menu button of a window.</sub>
+
 How it works: every sandbox created while the setting is on gets VMware's built-in remote display (VNC), bound to `127.0.0.1`, on its own random port, with its own random password. The server connects to it for each click or keystroke. The port and password are kept in the server's state file in the clones folder, never shown to the agent, and gone when the sandbox is destroyed. When the setting is off, clones have the remote display explicitly disabled, even if the base VM has one configured.
 
 What to know:
