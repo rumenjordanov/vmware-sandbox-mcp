@@ -51,6 +51,6 @@ What to know about it:
 - **Command text is recorded in full.** If the agent runs a command containing a secret (a token in a `curl` call, say), that secret is in the log in plain text. Treat the file accordingly.
 - **Command output is not recorded**, only its size, the exit code and the duration. The guest password is never recorded.
 - **Times are UTC.**
-- **The agent cannot read or change the log.** The server refuses to start if the log is inside the transfer folder, the base VM folder or a sandbox folder.
+- **The agent cannot read or change the log.** The server refuses to work if the log is inside the transfer folder, the base VM folder or a sandbox folder.
 - **The file grows without limit.** There is no rotation; delete or archive it yourself.
 - **Logging never blocks an operation.** If the file cannot be written (disk full, for example), the server prints a warning to stderr and carries on, so a sandbox can always still be destroyed.

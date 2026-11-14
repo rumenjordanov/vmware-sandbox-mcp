@@ -35,6 +35,7 @@ mcp = MCPServer(
 )
 
 _manager: SandboxManager | None = None
+_config_error: str | None = None  # why there is no manager, when the settings are wrong
 
 
 def build_manager() -> SandboxManager:
@@ -57,7 +58,12 @@ def build_manager() -> SandboxManager:
 async def _call(fn: Callable[..., T], *args: Any) -> T:
     """Run blocking sandbox work off the event loop; turn known failures into tool errors."""
     if _manager is None:
-        raise ToolError("The sandbox server is not configured.")
+        raise ToolError(
+            "The sandbox server is not set up on this computer yet"
+            + (f": {_config_error}" if _config_error else ".")
+            + " Sandboxes cannot be used until the user fixes its settings"
+            " (running `vmware-sandbox-mcp doctor` shows what is wrong)."
+        )
     try:
         return await anyio.to_thread.run_sync(fn, *args)
     except SandboxError as exc:
@@ -302,7 +308,7 @@ def _reaper_loop(manager: SandboxManager, interval_seconds: float = 60) -> None:
 
 
 def main() -> None:
-    global _manager
+    global _manager, _config_error
     args = sys.argv[1:]
     if args[:1] == ["doctor"]:
         from .doctor import main as doctor_main
@@ -311,13 +317,18 @@ def main() -> None:
     if args:
         print("usage: vmware-sandbox-mcp [doctor [--no-boot]]", file=sys.stderr)
         raise SystemExit(2)
+    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(name)s: %(message)s")
     try:
         _manager = build_manager()
     except ConfigError as exc:
+        # Still start, so the client can list the tools and each call explains what is missing.
+        # Without a manager nothing can be created, run or touched.
+        _config_error = str(exc)
         print(f"vmware-sandbox-mcp: configuration error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
+        print("vmware-sandbox-mcp: starting without sandboxes; every tool call will report this.", file=sys.stderr)
+        mcp.run()
+        return
 
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(name)s: %(message)s")
     _manager.cleanup_orphans()
     _manager.reap_expired()
     threading.Thread(target=_reaper_loop, args=(_manager,), daemon=True, name="sandbox-reaper").start()

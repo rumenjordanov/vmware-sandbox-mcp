@@ -151,7 +151,7 @@ Measured from inside a real sandbox on the test machine:
 
 ## Configuration
 
-All configuration is through environment variables. The server refuses to start if a required one is missing.
+All configuration is through environment variables. If a required one is missing or wrong, the server still starts so your client can list the tools, but every tool call is refused with the reason, and nothing is created or touched. `vmware-sandbox-mcp doctor` shows what to fix.
 
 <details>
 <summary><b>All settings</b></summary>

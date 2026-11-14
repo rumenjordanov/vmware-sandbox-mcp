@@ -103,7 +103,7 @@ Setup, once, with administrator rights:
 3. **Add the settings** it printed (`VMSANDBOX_WEB_VNET`, `VMSANDBOX_WEB_PROXY_HOST`) to the server's environment.
 4. **Verify.** `vmware-sandbox-mcp doctor` creates a `web` sandbox and checks from inside it that a public site loads, that the proxy refuses private addresses, that your computer's file-sharing ports are unreachable, and that there is no direct route out.
 
-The server refuses to start in `web` mode on VMnet0 (bridged), VMnet1 or VMnet8 (NAT), or on any network that VMware records as NAT.
+The server refuses to work with `web` mode set to VMnet0 (bridged), VMnet1 or VMnet8 (NAT), or to any network that VMware records as NAT: it reports the setting as wrong and creates no sandboxes.
 
 ## Keyboard and mouse
 
