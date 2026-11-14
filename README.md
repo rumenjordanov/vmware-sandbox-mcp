@@ -55,13 +55,13 @@ Use `web` whenever a task needs to download something. Keep `nat` for code you t
 Not on PyPI yet. Run it straight from a checkout or from Git with one command:
 
 ```
-uvx --from git+https://github.com/<your-account>/vmware-sandbox-mcp vmware-sandbox-mcp
+uvx --from git+https://github.com/rumenjordanov/vmware-sandbox-mcp vmware-sandbox-mcp
 ```
 
 or
 
 ```
-pip install git+https://github.com/<your-account>/vmware-sandbox-mcp
+pip install git+https://github.com/rumenjordanov/vmware-sandbox-mcp
 ```
 
 The server speaks MCP over stdio and is normally started by your MCP client (see below), not by hand.
@@ -182,7 +182,7 @@ Add to `.mcp.json` in your project (or your user-level MCP configuration):
   "mcpServers": {
     "vmware-sandbox": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/<your-account>/vmware-sandbox-mcp", "vmware-sandbox-mcp"],
+      "args": ["--from", "git+https://github.com/rumenjordanov/vmware-sandbox-mcp", "vmware-sandbox-mcp"],
       "env": {
         "VMSANDBOX_BASE_VMX": "E:\\Virtual Machines\\sandbox-base\\Debian 13.x 64-bit.vmx",
         "VMSANDBOX_SNAPSHOT": "clean",
@@ -207,7 +207,7 @@ Add to `claude_desktop_config.json` (Settings > Developer > Edit Config):
   "mcpServers": {
     "vmware-sandbox": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/<your-account>/vmware-sandbox-mcp", "vmware-sandbox-mcp"],
+      "args": ["--from", "git+https://github.com/rumenjordanov/vmware-sandbox-mcp", "vmware-sandbox-mcp"],
       "env": {
         "VMSANDBOX_BASE_VMX": "E:\\Virtual Machines\\sandbox-base\\Debian 13.x 64-bit.vmx",
         "VMSANDBOX_SNAPSHOT": "clean",
