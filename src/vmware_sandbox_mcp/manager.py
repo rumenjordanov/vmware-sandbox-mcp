@@ -18,6 +18,8 @@ from typing import Any
 from .audit import AuditLog
 from .config import Config
 from .folders import FolderError, pack_folder, unpack_folder
+from . import jobs
+from .jobs import JobError, JobStatus
 from .paths import TransferPathError, resolve_in_transfer, same_path
 from .state import StateStore
 from .guest_run import RunResult, build_script, parse_result
@@ -28,10 +30,11 @@ log = logging.getLogger("vmware_sandbox_mcp")
 
 MARKER = ".vmware-sandbox-mcp"
 MAX_RUN_TIMEOUT_SECONDS = 3600
-_ID = re.compile(r"^sbx-[0-9a-f]{8}$")
+_ID = re.compile(r"^sbx-[0-9a-f]{8}\Z")
 
 
 FOLDER_TIMEOUT_SECONDS = 600
+JOB_STEP_TIMEOUT_SECONDS = 60
 
 
 class SandboxError(Exception):
@@ -179,6 +182,33 @@ class SandboxManager:
             },
         )
 
+    def start(self, sandbox_id: str, command: str) -> str:
+        """Start a command that keeps running in the background. Returns its job id."""
+        return self._audited(
+            "start",
+            {"sandbox_id": sandbox_id, "command": command},
+            lambda: self._start(sandbox_id, command),
+            lambda job_id: {"job_id": job_id},
+        )
+
+    def check(self, sandbox_id: str, job_id: str) -> JobStatus:
+        """Status and newest output of a background command."""
+        return self._audited(
+            "check",
+            {"sandbox_id": sandbox_id, "job_id": job_id},
+            lambda: self._check(sandbox_id, job_id),
+            lambda s: {"status": s.status, "exit_code": s.exit_code},
+        )
+
+    def stop(self, sandbox_id: str, job_id: str) -> str:
+        """Stop a background command. Returns "stopped" or "finished" (it had already ended)."""
+        return self._audited(
+            "stop",
+            {"sandbox_id": sandbox_id, "job_id": job_id},
+            lambda: self._stop(sandbox_id, job_id),
+            lambda outcome: {"outcome": outcome},
+        )
+
     def copy_in(self, sandbox_id: str, host_path: str, guest_path: str) -> Transfer:
         """Copy a file or a folder from the transfer folder into the sandbox."""
         return self._audited(
@@ -309,6 +339,64 @@ class SandboxManager:
         elapsed = self._clock() - started
         timed_out = result.exit_code == 124 or (result.exit_code == 137 and elapsed >= timeout_seconds)
         return dataclasses.replace(result, timed_out=timed_out)
+
+    # ---- background commands ---------------------------------------------
+
+    def _start(self, sandbox_id: str, command: str) -> str:
+        if not isinstance(command, str) or not command.strip():
+            raise SandboxError("command is empty.")
+        record = self._require(sandbox_id)
+        if record.get("status") != "ready":
+            raise SandboxError(f"Sandbox {sandbox_id} is not ready.")
+        vmx = self._vmx(sandbox_id)
+        job_id = jobs.new_job_id()
+        guest_command = jobs.command_path(job_id)
+        with tempfile.TemporaryDirectory(prefix="vmsandbox-job-") as tmp:
+            host_command = Path(tmp) / "cmd.sh"
+            host_command.write_bytes((command.replace("\r\n", "\n") + "\n").encode("utf-8"))
+            try:
+                self._vmrun.copy_to_guest(vmx, host_command, guest_command)
+            except (VmrunError, OSError) as exc:
+                raise SandboxError(f"Could not start the command in the sandbox: {exc}") from exc
+        outcome = ""
+        try:
+            outcome = jobs.first_word(
+                self._guest_exec(vmx, jobs.start_script(job_id), JOB_STEP_TIMEOUT_SECONDS, self._proxy_env(record))
+            )
+        finally:
+            if outcome != "started":
+                self._vmrun.delete_guest_file(vmx, guest_command)
+        if outcome == "limit":
+            raise SandboxError(
+                f"This sandbox already has {jobs.MAX_JOBS_PER_SANDBOX} background commands running. "
+                "Stop one with sandbox_stop first."
+            )
+        if outcome != "started":
+            raise SandboxError("The sandbox could not start the command.")
+        return job_id
+
+    def _job_step(self, sandbox_id: str, job_id: str, script: Callable[[str], str]) -> RunResult:
+        vmx = self._ready_vmx(sandbox_id)
+        try:
+            text = script(job_id)  # validates the job id before it is put into a script
+        except JobError as exc:
+            raise SandboxError(str(exc)) from None
+        return self._guest_exec(vmx, text, JOB_STEP_TIMEOUT_SECONDS)
+
+    def _check(self, sandbox_id: str, job_id: str) -> JobStatus:
+        result = self._job_step(sandbox_id, job_id, jobs.check_script)
+        try:
+            return jobs.parse_check(job_id, result)
+        except JobError as exc:
+            raise SandboxError(str(exc)) from None
+
+    def _stop(self, sandbox_id: str, job_id: str) -> str:
+        outcome = jobs.first_word(self._job_step(sandbox_id, job_id, jobs.stop_script))
+        if outcome == "missing":
+            raise SandboxError(f"No background job {job_id} in this sandbox.")
+        if outcome not in ("stopped", "finished"):
+            raise SandboxError("The sandbox could not stop the command.")
+        return outcome
 
     def _proxy_env(self, record: dict[str, Any]) -> dict[str, str]:
         """Point programs in a "web" sandbox at the filtering proxy; it is their only way out."""

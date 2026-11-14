@@ -74,7 +74,31 @@ class FakeVmrunProcess:
         self.bad_login = False
         self.guest_dirs: dict[str, bytes] = {}  # guest folder path -> its contents as a tar
         self.tar_fails = False  # make the guest's tar commands fail with next_result
+        self.jobs: dict[str, dict] = {}  # job id -> {status, exit, stdout, stderr, command}
+        self.job_start_fails = False
         self.screen = b"\x89PNG\r\n\x1a\nfake-image"
+
+    def _job(self, action: str, job_id: str) -> tuple[bytes, bytes, int]:
+        if action == "start":
+            running = sum(1 for j in self.jobs.values() if j["status"] == "running")
+            command = self.guest_files.pop(f"/tmp/.sbx-job-{job_id}.cmd", None)
+            if running >= 8:
+                return b"limit\n", b"", 0
+            if command is None or self.job_start_fails:
+                return b"failed\n", b"", 0
+            self.jobs[job_id] = {"status": "running", "exit": None, "stdout": b"", "stderr": b"", "command": command.decode()}
+            return b"started\n", b"", 0
+        job = self.jobs.get(job_id)
+        if job is None:
+            return b"missing\n", b"", 0
+        if action == "stop":
+            if job["status"] != "running":
+                return b"finished\n", b"", 0
+            job["status"] = "stopped"
+            return b"stopped\n", b"", 0
+        code = job["exit"] if job["status"] == "exited" else "-"
+        header = f"{job['status']} {code} {len(job['stdout'])} {len(job['stderr'])}\n".encode()
+        return header + job["stdout"][-1_000_000:], job["stderr"][-1_000_000:], 0
 
     def commands(self) -> list[str]:
         return [self._split(argv)[0] for argv in self.calls]
@@ -128,7 +152,10 @@ class FakeVmrunProcess:
             stdout, stderr, exit_code = self.next_result
             unpack = re.fullmatch(r"mkdir -p -- (.+) && tar -xf (\S+) -C (.+)\n", command_text)
             pack = re.fullmatch(r"tar --hard-dereference -cf (\S+) -C (.+) \.\n", command_text)
-            if self.tar_fails:
+            job = re.match(r"(?:export \S+=\S+\n)*# sbx-job (start|check|stop) (job-[0-9a-f]{8})\n", command_text)
+            if job:  # imitate the job scripts in the guest
+                stdout, stderr, exit_code = self._job(job.group(1), job.group(2))
+            elif self.tar_fails:
                 pass
             elif unpack:  # imitate tar in the guest
                 self.guest_dirs[shlex.split(unpack.group(1))[0]] = self.guest_files[unpack.group(2)]

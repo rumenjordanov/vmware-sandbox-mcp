@@ -121,7 +121,7 @@ def test_web_clone_is_attached_only_to_the_dedicated_network():
     assert result["isolation.tools.hgfs.disable"] == '"TRUE"'  # isolation still applied
 
 
-@pytest.mark.parametrize("vnet", [None, "", "VMnet0", "VMnet1", "VMnet8", "VMnet20", "nat", 'VMnet9"\nethernet1.present = "TRUE'])
+@pytest.mark.parametrize("vnet", [None, "", "VMnet0", "VMnet1", "VMnet8", "VMnet20", "nat", "VMnet9\n", 'VMnet9"\nethernet1.present = "TRUE'])
 def test_web_clone_refuses_any_other_network(vnet):
     with pytest.raises(ValueError):
         harden_vmx_text(BASE_VMX_TEXT, "web", vnet)

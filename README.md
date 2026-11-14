@@ -22,6 +22,9 @@ The agent then:
 |---|---|
 | `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"` (see [Network modes](#network-modes)). Returns a `sandbox_id`. |
 | `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
+| `sandbox_start(sandbox_id, command)` | Starts a command that keeps running in the background (a server, a long build). Returns a `job_id` at once. |
+| `sandbox_check(sandbox_id, job_id)` | Whether a background command is running, exited or stopped, its exit code, and its output so far. |
+| `sandbox_stop(sandbox_id, job_id)` | Stops a background command and the programs it started. |
 | `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
 | `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
 | `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
@@ -127,7 +130,7 @@ The server refuses to start in `web` mode on VMnet0 (bridged), VMnet1 or VMnet8 
 
 ### Audit log
 
-Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, files copied, screenshots taken, and every request a `web` sandbox makes through the proxy (destination, address, allowed or refused). Refused and failed operations are recorded too, with the reason. Example:
+Every operation is appended to the audit log as one line of JSON: sandboxes created and destroyed (including automatic removal of expired or orphaned ones), commands run, background commands started, checked and stopped, files copied, screenshots taken, and every request a `web` sandbox makes through the proxy (destination, address, allowed or refused). Refused and failed operations are recorded too, with the reason. Example:
 
 ```json
 {"time": "2026-11-14T12:08:19Z", "event": "run", "sandbox_id": "sbx-cbe8c2a2", "command": "echo out; echo err >&2; exit 3", "timeout_seconds": 30, "ok": true, "seconds": 4.1, "exit_code": 3, "timed_out": false, "stdout_bytes": 4, "stderr_bytes": 4}
@@ -233,6 +236,7 @@ What the server enforces, in code and covered by tests:
 - **Resources.** Each sandbox uses the base VM's memory and CPU allocation, and its disk grows until it is destroyed. The cap limits the count, not the size.
 - **Races.** Path checks happen just before the copy. Another program on the host changing links inside the transfer folder at exactly that moment could defeat them.
 - **Folder copies are not exact mirrors.** Files copied in lose the executable flag (Windows has none). Copied out, links, special files (pipes, devices) and names not valid on Windows (containing `:` `?` `*` or a backslash, ending in a dot, or reserved names like `CON`) are left out. Two names differing only in case end up as one file. The limit is 100,000 files or 4 GB per copy.
+- **Background commands are a convenience, not a limit.** The cap of 8 per sandbox is counted inside the sandbox, so code running there can get around it, just as any command can start more processes with `&`. Their output is kept on the sandbox's own disk without a size limit; a check returns the newest 1 MB. A program that detaches itself into its own session survives `sandbox_stop`, until the sandbox is destroyed.
 - **Screenshots are view-only.** There is no keyboard or mouse tool, so a graphical guest usually shows its login screen.
 
 ### Future improvements

@@ -38,7 +38,7 @@ _NAT = {
     "ethernet0.addressType": "generated",
 }
 _NO_NETWORK = {"ethernet0.present": "FALSE"}
-_VNET = re.compile(r"^VMnet([2-7]|9|1[0-9])$")  # never bridged (0), shared host-only (1) or NAT (8)
+_VNET = re.compile(r"^VMnet([2-7]|9|1[0-9])\Z")  # never bridged (0), shared host-only (1) or NAT (8)
 
 
 def _web(vnet: str | None) -> dict[str, str]:

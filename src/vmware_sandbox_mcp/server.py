@@ -104,6 +104,53 @@ async def sandbox_run(sandbox_id: str, command: str, timeout_seconds: int = 60) 
 
 
 @mcp.tool()
+async def sandbox_start(sandbox_id: str, command: str) -> str:
+    """Start a command in a sandbox that keeps running in the background, and return at once.
+
+    Use this for things that do not finish on their own or take very long: a web server,
+    a database, a watcher, a long build or download. sandbox_run would wait for them and
+    time out. After starting, use sandbox_run for other commands in the same sandbox (for
+    example to talk to the server you started), sandbox_check to see its output and
+    whether it is still running, and sandbox_stop to end it.
+
+    The command is run by bash, starting in the home directory, with no keyboard input.
+    A sandbox can have at most 8 background commands running at once. Background commands
+    end when the sandbox is destroyed.
+
+    Returns a job_id to pass to sandbox_check and sandbox_stop.
+    """
+    return await _call(lambda: _manager.start(sandbox_id, command))  # type: ignore[union-attr]
+
+
+@mcp.tool()
+async def sandbox_check(sandbox_id: str, job_id: str) -> dict[str, Any]:
+    """Look at a background command started with sandbox_start: is it still running, and what has it printed?
+
+    Returns status ("running", "exited" when it ended by itself, or "stopped" when it was
+    killed), exit_code (only when status is "exited"; 0 means success), and stdout and
+    stderr collected so far. If the output is longer than about 1 MB only the newest part
+    is returned, and stdout_truncated / stderr_truncated say so. Calling this does not
+    affect the command; call it again later to see newer output.
+    """
+    status = await _call(lambda: _manager.check(sandbox_id, job_id))  # type: ignore[union-attr]
+    return dataclasses.asdict(status)
+
+
+@mcp.tool()
+async def sandbox_stop(sandbox_id: str, job_id: str) -> str:
+    """Stop a background command started with sandbox_start, together with any programs it started.
+
+    Use this when you no longer need the command, or to free one of the 8 background
+    slots. Its output stays available through sandbox_check afterwards.
+    Returns a short confirmation, which also says if the command had already ended.
+    """
+    outcome = await _call(lambda: _manager.stop(sandbox_id, job_id))  # type: ignore[union-attr]
+    if outcome == "finished":
+        return f"Background command {job_id} had already ended."
+    return f"Background command {job_id} stopped."
+
+
+@mcp.tool()
 async def sandbox_copy_in(sandbox_id: str, host_path: str, guest_path: str) -> str:
     """Copy a file or a whole folder from the user's computer into a sandbox.
 

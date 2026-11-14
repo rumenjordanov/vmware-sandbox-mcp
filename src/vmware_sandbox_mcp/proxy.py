@@ -39,7 +39,7 @@ IDLE_TIMEOUT_SECONDS = 300
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _V4_COMPATIBLE = ipaddress.ip_network("::/96")
-_HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
+_HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?\Z")
 _HOP_HEADERS = (b"proxy-connection", b"proxy-authorization", b"connection", b"keep-alive")
 
 

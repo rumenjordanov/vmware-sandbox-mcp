@@ -1,7 +1,7 @@
 """End-to-end test against the REAL base VM.
 
 Starts the server exactly as an MCP client would (stdio, JSON-RPC), exercises all
-seven tools and reads the audit log back. Needs the VMSANDBOX_* environment variables (see README) and takes about
+ten tools and reads the audit log back. Needs the VMSANDBOX_* environment variables (see README) and takes about
 a minute. Run:
 
     python scripts/e2e.py
@@ -86,9 +86,10 @@ def main() -> int:
     sandbox_id = None
     try:
         names = [t["name"] for t in client.request("tools/list")["tools"]]
-        check("server exposes exactly the 7 tools", sorted(names) == sorted([
+        check("server exposes exactly the 10 tools", sorted(names) == sorted([
             "sandbox_create", "sandbox_run", "sandbox_copy_in", "sandbox_copy_out",
             "sandbox_screenshot", "sandbox_destroy", "sandbox_list",
+            "sandbox_start", "sandbox_check", "sandbox_stop",
         ]), names)
 
         created = client.tool("sandbox_create")
@@ -144,6 +145,20 @@ def main() -> int:
               "2 entries were left out" in text(got) and sorted(p.name for p in back.iterdir()) == ["a.txt", "joined.txt", "sub dir"],
               text(got))
 
+        started = client.tool("sandbox_start", sandbox_id=sandbox_id, command="cd /tmp && exec python3 -m http.server 8000")
+        check("sandbox_start returns a job id", not started.get("isError") and text(started).startswith("job-"), text(started))
+        job_id = text(started).strip()
+        asked = client.tool("sandbox_run", sandbox_id=sandbox_id, timeout_seconds=30,
+                            command="sleep 2; wget -qO- http://localhost:8000/ | grep -c e2e-in.txt")["structuredContent"]
+        check("a later command can talk to the background server", asked["stdout"].strip() == "1", asked)
+        state = client.tool("sandbox_check", sandbox_id=sandbox_id, job_id=job_id)["structuredContent"]
+        check("sandbox_check shows it running, with its output",
+              state["status"] == "running" and "GET /" in state["stderr"], state)
+        stopped = client.tool("sandbox_stop", sandbox_id=sandbox_id, job_id=job_id)
+        check("sandbox_stop stops it", not stopped.get("isError") and "stopped" in text(stopped), text(stopped))
+        state = client.tool("sandbox_check", sandbox_id=sandbox_id, job_id=job_id)["structuredContent"]
+        check("sandbox_check then shows it stopped", state["status"] == "stopped", state)
+
         shot = client.tool("sandbox_screenshot", sandbox_id=sandbox_id)
         images = [c for c in shot["content"] if c["type"] == "image"]
         check("sandbox_screenshot returns a PNG",
@@ -162,6 +177,7 @@ def main() -> int:
         check("audit log has one entry per operation, in order",
               [e["event"] for e in mine] == ["create", "run", "run", "run", "copy_in", "run",
                                              "copy_out", "copy_out", "copy_in", "run", "copy_out",
+                                             "start", "run", "check", "stop", "check",
                                              "screenshot", "destroy"],
               [e["event"] for e in mine])
         check("audit log records the command text and exit code",

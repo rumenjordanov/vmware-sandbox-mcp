@@ -81,3 +81,9 @@ def test_base_and_neighbour_untouched_by_full_lifecycle(env):
         assert str(env.other_vmx) not in argv
         if str(env.base_vmx) in argv:
             assert "clone" in argv
+
+
+@pytest.mark.parametrize("sandbox_id", ["sbx-1234abcd\n", "sbx-1234abcd ", " sbx-1234abcd", "sbx-1234ABCD", "sbx-1234abcd/..", ""])
+def test_sandbox_ids_must_match_exactly(env, sandbox_id):
+    with pytest.raises(SandboxError, match="not a valid sandbox id"):
+        env.manager.destroy(sandbox_id)

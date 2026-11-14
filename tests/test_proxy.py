@@ -232,7 +232,7 @@ def test_bad_host_names_never_reach_the_resolver(make_proxy):
         return ["1.1.1.1"]
 
     proxy = make_proxy(resolver=spy)
-    for host in ("exa mple", "-bad.example", "a" * 300, "x;y", "%00"):
+    for host in ("exa mple", "-bad.example", "a" * 300, "x;y", "%00", "example.com\n", "exa\nmple.com"):
         reply = exchange(proxy.port, f"CONNECT {host}:443 HTTP/1.1\r\n\r\n".encode())
         assert reply.startswith(b"HTTP/1.1 400")
     assert calls == []
