@@ -275,6 +275,46 @@ async def sandbox_key(sandbox_id: str, keys: str) -> str:
 
 
 @mcp.tool()
+async def sandbox_checkpoint(sandbox_id: str, name: str) -> str:
+    """Save a sandbox's current files under a name, so you can come back to exactly this point later.
+
+    Use this before something risky or slow to redo: installing a large package, running a
+    script you do not trust, changing system settings. Also use it once a sandbox is set up
+    the way you will want it again. Then sandbox_restore undoes everything done since.
+
+    Takes about a minute: the sandbox shuts down cleanly, is saved, and starts again.
+    Everything on its disk is saved, but files under /tmp are NOT: /tmp lives in memory and
+    is emptied whenever the sandbox restarts, so keep what you want to keep in your home
+    directory. Programs that are running are NOT saved either: they are stopped, including
+    background commands from sandbox_start, so start them again afterwards.
+
+    name: 1 to 40 letters, digits, "-" or "_". A sandbox holds at most 5 checkpoints. Saving
+    under a name that already exists replaces that checkpoint; when all 5 are used, replace
+    one of them. Checkpoints disappear when the sandbox is destroyed.
+    """
+    done = await _call(lambda: _manager.checkpoint(sandbox_id, name))  # type: ignore[union-attr]
+    kept = ", ".join(done.checkpoints)
+    return (
+        f"Checkpoint {done.name!r} {'replaced' if done.replaced else 'saved'}. "
+        f"This sandbox now has: {kept}. Programs that were running have been stopped."
+    )
+
+
+@mcp.tool()
+async def sandbox_restore(sandbox_id: str, name: str) -> str:
+    """Roll a sandbox back to a checkpoint saved with sandbox_checkpoint.
+
+    Everything done in the sandbox since that checkpoint is lost: files created or changed,
+    packages installed. Running programs, including background commands, are stopped.
+    Files under /tmp are emptied by the restart; files in your home directory come back as
+    they were at the checkpoint. Takes about half a minute while the sandbox restarts. The checkpoint itself is kept, so
+    you can roll back to it again and again. Use sandbox_list to see a sandbox's checkpoints.
+    """
+    await _call(lambda: _manager.restore(sandbox_id, name))  # type: ignore[union-attr]
+    return f"Sandbox {sandbox_id} is back at checkpoint {name!r}. Programs that were running have been stopped."
+
+
+@mcp.tool()
 async def sandbox_destroy(sandbox_id: str) -> str:
     """Shut down a sandbox and permanently delete it and everything inside it.
 
@@ -292,7 +332,9 @@ async def sandbox_list() -> list[dict[str, Any]]:
 
     Use this to find a sandbox_id you lost track of, or to check whether old sandboxes
     should be destroyed. Returns one entry per sandbox with its sandbox_id, network mode
-    ("none" or "nat"), status, and age in seconds. Returns an empty list if there are none.
+    ("none", "web" or "nat"), status ("ready", or "busy" while a checkpoint is being saved
+    or restored), age in seconds, and the names of its checkpoints. Returns an empty list
+    if there are none.
     """
     return await _call(lambda: _manager.list())  # type: ignore[union-attr]
 

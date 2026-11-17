@@ -71,7 +71,7 @@ def test_clone_source_is_always_the_base(env):
 
 
 def test_unknown_commands_are_refused(env):
-    for command in ("snapshot", "revertToSnapshot", "deleteSnapshot", "addSharedFolder", "reset"):
+    for command in ("addSharedFolder", "reset", "suspend", "pause", "writeVariable", "upgradevm", "installTools"):
         with pytest.raises(ForbiddenTargetError):
             env.vmrun._run(command, clone_vmx(env))
     assert env.fake.calls == []
@@ -102,3 +102,57 @@ def test_errors_never_contain_the_guest_password(env):
     with pytest.raises(VmrunError) as info:
         env.vmrun.start(clone_vmx(env))
     assert "s3cret-pw" not in str(info.value)
+
+
+# ---- checkpoints: snapshots of a sandbox's own disk, never of the base VM ----------------------
+
+CHECKPOINT_METHODS = ["take_checkpoint", "restore_checkpoint", "delete_checkpoint"]
+
+
+@pytest.mark.parametrize("method", CHECKPOINT_METHODS)
+def test_checkpoint_commands_refuse_the_base_vm_and_every_other_vm(env, method):
+    for vmx in (env.base_vmx, env.other_vmx, env.clones / "loose.vmx", env.clones / "a" / "b" / "deep.vmx"):
+        with pytest.raises(ForbiddenTargetError):
+            getattr(env.vmrun, method)(vmx, "cp-1")
+    assert env.fake.calls == []
+
+
+@pytest.mark.parametrize("method", CHECKPOINT_METHODS)
+def test_checkpoint_commands_work_on_a_sandbox_and_pass_one_argument_each(env, method):
+    if method != "take_checkpoint":
+        env.vmrun.take_checkpoint(clone_vmx(env), "cp-1")  # something to restore or delete
+        env.fake.calls.clear()
+    getattr(env.vmrun, method)(clone_vmx(env), "cp-1" if method != "take_checkpoint" else "cp-1")
+    command = {"take_checkpoint": "snapshot", "restore_checkpoint": "revertToSnapshot",
+               "delete_checkpoint": "deleteSnapshot"}[method]
+    assert env.fake.calls[0] == ["vmrun", "-T", "ws", command, str(clone_vmx(env)), "cp-1"]
+
+
+def test_listing_snapshots_is_allowed_for_the_base_vm_and_sandboxes_only(env):
+    env.vmrun.list_checkpoints(clone_vmx(env))
+    env.vmrun.list_snapshots()
+    assert env.fake.commands() == ["listSnapshots", "listSnapshots"]
+    env.fake.calls.clear()
+    for vmx in (env.other_vmx, env.clones / "loose.vmx"):
+        with pytest.raises(ForbiddenTargetError):
+            env.vmrun.list_checkpoints(vmx)
+    assert env.fake.calls == []
+
+
+@pytest.mark.parametrize("name", [
+    "", " ", "-rf", "--help", "a b", "a;b", "a/b", "a\\b", "x" * 41, "x\n", "é", "a\x00b", "a\"b", None, 5, ["a"],
+])
+def test_checkpoint_names_cannot_look_like_options_or_hold_odd_characters(env, name):
+    for method in CHECKPOINT_METHODS:
+        with pytest.raises(ForbiddenTargetError):
+            getattr(env.vmrun, method)(clone_vmx(env), name)
+    assert env.fake.calls == []
+
+
+def test_soft_stop_is_a_stop_of_a_sandbox_only(env):
+    env.vmrun.clone(clone_vmx(env), "Snapshot 1", "sbx-0a1b2c3d")
+    env.vmrun.start(clone_vmx(env))
+    env.vmrun.stop(clone_vmx(env), soft=True)
+    assert env.fake.calls[-1][3:] == ["stop", str(clone_vmx(env)), "soft"]
+    with pytest.raises(ForbiddenTargetError):
+        env.vmrun.stop(env.base_vmx, soft=True)

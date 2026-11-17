@@ -76,6 +76,11 @@ class FakeVmrunProcess:
         self.tar_fails = False  # make the guest's tar commands fail with next_result
         self.jobs: dict[str, dict] = {}  # job id -> {status, exit, stdout, stderr, command}
         self.job_start_fails = False
+        self.snapshots: dict[str, list[str]] = {}  # sandbox vmx -> names of its checkpoints
+        self.disks: dict[tuple[str, str], tuple[dict, dict]] = {}  # (vmx, name) -> the guest disk then
+        self.snapshot_taken_while_running: list[bool] = []
+        self.hooks: dict[str, object] = {}  # command -> callable run when vmrun is asked to do it
+        self.ignore_stop = False  # a guest that never shuts down
         self.screen = b"\x89PNG\r\n\x1a\nfake-image"
 
     def _job(self, action: str, job_id: str) -> tuple[bytes, bytes, int]:
@@ -114,12 +119,41 @@ class FakeVmrunProcess:
         argv = list(argv)
         self.calls.append(argv)
         command, args = self._split(argv)
+        if command in self.hooks:
+            self.hooks[command]()
         if command in self.fail:
             return 255, f"Error: simulated {command} failure"
         if command == "list":
             return 0, f"Total running VMs: {len(self.running)}\n" + "\n".join(sorted(self.running))
         if command == "listSnapshots":
-            return 0, "Total snapshots: 1\nSnapshot 1"
+            if Path(args[0]).name.startswith("sbx-"):
+                names = self.snapshots.get(args[0], [])
+            else:
+                names = ["Snapshot 1"]
+            return 0, f"Total snapshots: {len(names)}\n" + "\n".join(names)
+        if command == "snapshot":
+            self.snapshot_taken_while_running.append(args[0] in self.running)
+            names = self.snapshots.setdefault(args[0], [])
+            if args[1] in names:
+                return 255, "Error: a snapshot with that name already exists"
+            names.append(args[1])
+            self.disks[(args[0], args[1])] = (dict(self.guest_files), dict(self.guest_dirs))
+            return 0, ""
+        if command == "revertToSnapshot":
+            if args[1] not in self.snapshots.get(args[0], []):
+                return 255, "Error: The snapshot does not exist"
+            files, dirs = self.disks[(args[0], args[1])]
+            self.guest_files, self.guest_dirs = dict(files), dict(dirs)
+            self.running.discard(args[0])  # like the real thing: the sandbox is left powered off
+            self.jobs.clear()
+            return 0, ""
+        if command == "deleteSnapshot":
+            names = self.snapshots.get(args[0], [])
+            if args[1] not in names:
+                return 255, "Error: The snapshot does not exist"
+            names.remove(args[1])
+            self.disks.pop((args[0], args[1]), None)
+            return 0, ""
         if command == "clone":
             dest = Path(args[1])
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +165,9 @@ class FakeVmrunProcess:
         if command == "stop":
             if args[0] not in self.running:
                 return 255, "Error: The virtual machine is not powered on"
-            self.running.discard(args[0])
+            if not self.ignore_stop:
+                self.running.discard(args[0])
+                self.jobs.clear()  # a powered-off sandbox has no running programs
             return 0, ""
         if command == "deleteVM":
             shutil.rmtree(Path(args[0]).parent, ignore_errors=True)

@@ -11,6 +11,7 @@ vmrun is invoked with an argument list, never through a shell.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -22,10 +23,10 @@ from .paths import resolve, same_path
 Runner = Callable[[Sequence[str], float], tuple[int, str]]
 
 # command -> which VM it may target
-_BASE, _CLONE, _NONE = "base", "clone", "none"
+_BASE, _CLONE, _NONE, _EITHER = "base", "clone", "none", "base-or-clone"
 _COMMANDS: dict[str, str] = {
     "list": _NONE,
-    "listSnapshots": _BASE,
+    "listSnapshots": _EITHER,  # read-only, so the base VM or one of our clones
     "clone": _BASE,
     "start": _CLONE,
     "stop": _CLONE,
@@ -37,7 +38,12 @@ _COMMANDS: dict[str, str] = {
     "deleteFileInGuest": _CLONE,
     "directoryExistsInGuest": _CLONE,
     "captureScreen": _CLONE,
+    # checkpoints: only ever a sandbox's own snapshots, never the base VM's
+    "snapshot": _CLONE,
+    "revertToSnapshot": _CLONE,
+    "deleteSnapshot": _CLONE,
 }
+_SNAPSHOT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}\Z")
 _GUEST_COMMANDS = {
     "captureScreen",
     "runProgramInGuest",
@@ -132,6 +138,9 @@ class VmrunClient:
                 raise ForbiddenTargetError(f"Refused: {command} takes no arguments.")
         elif role == _BASE:
             argv.append(self._checked_base(vmx or ""))
+        elif role == _EITHER:
+            is_base = same_path(vmx or "", self._base_vmx)
+            argv.append(self._checked_base(vmx or "") if is_base else self._checked_clone(vmx or ""))
         else:
             argv.append(self._checked_clone(vmx or ""))
 
@@ -171,8 +180,9 @@ class VmrunClient:
     def start(self, vmx: str | os.PathLike[str]) -> None:
         self._run("start", vmx, "nogui", timeout=180)
 
-    def stop(self, vmx: str | os.PathLike[str]) -> None:
-        self._run("stop", vmx, "hard", timeout=90)
+    def stop(self, vmx: str | os.PathLike[str], soft: bool = False) -> None:
+        """Power off. soft asks the guest to shut down cleanly (needs the guest tools); hard cuts the power."""
+        self._run("stop", vmx, "soft" if soft else "hard", timeout=240 if soft else 90)
 
     def delete_vm(self, vmx: str | os.PathLike[str]) -> None:
         self._run("deleteVM", vmx, timeout=120)
@@ -203,6 +213,27 @@ class VmrunClient:
     def guest_dir_exists(self, vmx: str | os.PathLike[str], guest_path: str) -> bool:
         code, _ = self._run("directoryExistsInGuest", vmx, guest_path, timeout=30, check=False)
         return code == 0
+
+    # ---- checkpoints: a sandbox's own snapshots --------------------------
+
+    @staticmethod
+    def _snapshot_name(name: str) -> str:
+        if not isinstance(name, str) or not _SNAPSHOT_NAME.match(name):
+            raise ForbiddenTargetError(f"Refused: {name!r} is not a valid checkpoint name.")
+        return name
+
+    def list_checkpoints(self, vmx: str | os.PathLike[str]) -> list[str]:
+        _, out = self._run("listSnapshots", vmx, timeout=60)
+        return [line.strip() for line in out.splitlines()[1:] if line.strip()]
+
+    def take_checkpoint(self, vmx: str | os.PathLike[str], name: str) -> None:
+        self._run("snapshot", vmx, self._snapshot_name(name), timeout=600)
+
+    def restore_checkpoint(self, vmx: str | os.PathLike[str], name: str) -> None:
+        self._run("revertToSnapshot", vmx, self._snapshot_name(name), timeout=600)
+
+    def delete_checkpoint(self, vmx: str | os.PathLike[str], name: str) -> None:
+        self._run("deleteSnapshot", vmx, self._snapshot_name(name), timeout=600)
 
     def capture_screen(self, vmx: str | os.PathLike[str], host_png: str | os.PathLike[str]) -> None:
         self._run("captureScreen", vmx, str(host_png), timeout=60)

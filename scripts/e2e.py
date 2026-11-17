@@ -1,7 +1,7 @@
 """End-to-end test against the REAL base VM.
 
 Starts the server exactly as an MCP client would (stdio, JSON-RPC), exercises all
-thirteen tools and reads the audit log back. The keyboard and mouse part runs when
+fifteen tools and reads the audit log back. The keyboard and mouse part runs when
 VMSANDBOX_REMOTE_INPUT is on, the web part when VMSANDBOX_WEB_VNET is set. Needs the VMSANDBOX_* environment variables (see README) and takes about
 a minute. Run:
 
@@ -57,8 +57,8 @@ class Client:
                     raise RuntimeError(f"{method} failed: {reply['error']}")
                 return reply["result"]
 
-    def tool(self, name: str, **arguments) -> dict:
-        return self.request("tools/call", {"name": name, "arguments": arguments})
+    def tool(self, tool_name: str, /, **arguments) -> dict:
+        return self.request("tools/call", {"name": tool_name, "arguments": arguments})
 
     def close(self) -> None:
         self.proc.stdin.close()
@@ -88,11 +88,12 @@ def main() -> int:
     sandbox_id = None
     try:
         names = [t["name"] for t in client.request("tools/list")["tools"]]
-        check("server exposes exactly the 13 tools", sorted(names) == sorted([
+        check("server exposes exactly the 15 tools", sorted(names) == sorted([
             "sandbox_create", "sandbox_run", "sandbox_copy_in", "sandbox_copy_out",
             "sandbox_screenshot", "sandbox_destroy", "sandbox_list",
             "sandbox_start", "sandbox_check", "sandbox_stop",
             "sandbox_click", "sandbox_type", "sandbox_key",
+            "sandbox_checkpoint", "sandbox_restore",
         ]), names)
 
         created = client.tool("sandbox_create")
@@ -162,6 +163,30 @@ def main() -> int:
         state = client.tool("sandbox_check", sandbox_id=sandbox_id, job_id=job_id)["structuredContent"]
         check("sandbox_check then shows it stopped", state["status"] == "stopped", state)
 
+        def run_ok(command, timeout=60):
+            return client.tool("sandbox_run", sandbox_id=sandbox_id, command=command,
+                               timeout_seconds=timeout)["structuredContent"]
+
+        run_ok("echo original > ~/cp.txt; mkdir -p ~/cpdir; echo keep > ~/cpdir/f.txt; sync")
+        began = time.time()
+        saved = client.tool("sandbox_checkpoint", sandbox_id=sandbox_id, name="e2e")
+        check(f"sandbox_checkpoint saves the sandbox ({time.time() - began:.0f}s)",
+              not saved.get("isError") and "'e2e' saved" in text(saved), text(saved))
+        listed = client.tool("sandbox_list")["structuredContent"]["result"]
+        check("sandbox_list shows the checkpoint",
+              [s["checkpoints"] for s in listed if s["sandbox_id"] == sandbox_id] == [["e2e"]], listed)
+        run_ok("echo changed > ~/cp.txt; rm -rf ~/cpdir; echo extra > ~/extra.txt; sync")
+        began = time.time()
+        restored = client.tool("sandbox_restore", sandbox_id=sandbox_id, name="e2e")
+        check(f"sandbox_restore rolls the sandbox back ({time.time() - began:.0f}s)",
+              not restored.get("isError"), text(restored))
+        back = run_ok("cat ~/cp.txt; cat ~/cpdir/f.txt; ls ~/extra.txt 2>/dev/null | wc -l")
+        check("the saved files are back and the later changes are gone",
+              back["stdout"].split() == ["original", "keep", "0"], back)
+        refused = client.tool("sandbox_restore", sandbox_id=sandbox_id, name="no-such-checkpoint")
+        check("restoring an unknown checkpoint is refused and says what exists",
+              bool(refused.get("isError")) and "e2e" in text(refused), text(refused))
+
         shot = client.tool("sandbox_screenshot", sandbox_id=sandbox_id)
         images = [c for c in shot["content"] if c["type"] == "image"]
         check("sandbox_screenshot returns a PNG",
@@ -181,6 +206,7 @@ def main() -> int:
               [e["event"] for e in mine] == ["create", "run", "run", "run", "copy_in", "run",
                                              "copy_out", "copy_out", "copy_in", "run", "copy_out",
                                              "start", "run", "check", "stop", "check",
+                                             "run", "checkpoint", "run", "restore", "run", "restore",
                                              "screenshot", "destroy"],
               [e["event"] for e in mine])
         check("audit log records the command text and exit code",

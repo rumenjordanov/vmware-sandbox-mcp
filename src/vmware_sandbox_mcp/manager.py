@@ -39,11 +39,20 @@ _ID = re.compile(r"^sbx-[0-9a-f]{8}\Z")
 
 
 FOLDER_TIMEOUT_SECONDS = 600
+MAX_CHECKPOINTS = 5
+_CHECKPOINT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}\Z")
 JOB_STEP_TIMEOUT_SECONDS = 60
 
 
 class SandboxError(Exception):
     """A problem the agent can understand and act on."""
+
+
+@dataclasses.dataclass(frozen=True)
+class CheckpointResult:
+    name: str
+    replaced: bool
+    checkpoints: list[str]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -218,6 +227,24 @@ class SandboxManager:
             lambda outcome: {"outcome": outcome},
         )
 
+    def checkpoint(self, sandbox_id: str, name: str) -> CheckpointResult:
+        """Save the sandbox's disk under a name (replacing a checkpoint of that name)."""
+        return self._audited(
+            "checkpoint",
+            {"sandbox_id": sandbox_id, "name": name},
+            lambda: self._checkpoint(sandbox_id, name),
+            lambda r: {"replaced": r.replaced, "checkpoints": r.checkpoints},
+        )
+
+    def restore(self, sandbox_id: str, name: str) -> list[str]:
+        """Roll the sandbox's disk back to a checkpoint. Returns the checkpoint names it still has."""
+        return self._audited(
+            "restore",
+            {"sandbox_id": sandbox_id, "name": name},
+            lambda: self._restore(sandbox_id, name),
+            lambda names: {"checkpoints": names},
+        )
+
     def click(self, sandbox_id: str, x: int, y: int, button: str = "left", double: bool = False) -> None:
         """Click on the sandbox's screen at a pixel position."""
         self._audited(
@@ -385,6 +412,148 @@ class SandboxManager:
         timed_out = result.exit_code == 124 or (result.exit_code == 137 and elapsed >= timeout_seconds)
         return dataclasses.replace(result, timed_out=timed_out)
 
+    # ---- checkpoints -----------------------------------------------------
+    #
+    # A checkpoint is a snapshot of the sandbox's disk taken while it is powered off. Saving the
+    # memory too is possible, but on the test machine it took over three minutes and 2 GB per
+    # checkpoint; a clean shutdown, a snapshot and a boot take well under a minute. So running
+    # programs are not saved: the sandbox restarts when a checkpoint is saved or restored.
+
+    @staticmethod
+    def _checkpoint_name(name: str) -> str:
+        if not isinstance(name, str) or not _CHECKPOINT_NAME.match(name):
+            raise SandboxError(
+                "A checkpoint name is 1 to 40 letters, digits, '-' or '_', starting with a letter or digit."
+            )
+        return name
+
+    def _begin_busy(self, sandbox_id: str, check: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+        """Mark a sandbox busy, so nothing else uses it meanwhile, once `check` has approved the request."""
+        self._require(sandbox_id)
+        with self._store.edit() as sandboxes:
+            record = sandboxes.get(sandbox_id)
+            if record is None:
+                raise SandboxError(f"No sandbox with id {sandbox_id}. Use sandbox_list to see active ones.")
+            if record.get("status") != "ready":
+                raise SandboxError(f"Sandbox {sandbox_id} is not ready.")
+            check(record)
+            record["status"] = "busy"
+            record["busy_since"] = self._clock()
+            return dict(record)
+
+    def _end_busy(self, sandbox_id: str, checkpoints: list[dict[str, Any]] | None = None) -> None:
+        with self._store.edit() as sandboxes:
+            record = sandboxes.get(sandbox_id)
+            if record is not None:
+                record["status"] = "ready"
+                record.pop("busy_since", None)
+                if checkpoints is not None:
+                    record["checkpoints"] = checkpoints
+
+    def _is_running(self, vmx: Path) -> bool:
+        try:
+            return any(same_path(vmx, path) for path in self._vmrun.list_running())
+        except VmrunError:
+            return False
+
+    def _wait_stopped(self, vmx: Path, seconds: float = 120) -> None:
+        deadline = self._clock() + seconds
+        while self._is_running(vmx):
+            if self._clock() >= deadline:
+                raise SandboxError("The sandbox did not power off in time.")
+            self._sleep(2)
+
+    def _synced_checkpoints(self, vmx: Path, known: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The checkpoints VMware says exist, keeping the saved times of those already known."""
+        times = {c["name"]: c.get("created_at") for c in known}
+        return [
+            {"name": name, "created_at": times.get(name) or self._clock()}
+            for name in self._vmrun.list_checkpoints(vmx)
+        ]
+
+    def _bring_back(self, sandbox_id: str, vmx: Path, known: list[dict[str, Any]]) -> bool:
+        """After a failed save or restore: get the sandbox running and usable again, or remove it."""
+        try:
+            if not self._is_running(vmx):
+                self._vmrun.start(vmx)
+            self._wait_ready(vmx)
+            checkpoints = self._synced_checkpoints(vmx, known)
+        except Exception:
+            self._try_teardown(sandbox_id, "unusable after a failed checkpoint operation")
+            return False
+        self._end_busy(sandbox_id, checkpoints)
+        return True
+
+    def _checkpoint(self, sandbox_id: str, name: str) -> CheckpointResult:
+        name = self._checkpoint_name(name)
+        self._require(sandbox_id)
+        vmx = self._vmx(sandbox_id)
+        replacing = {"yes": False}
+
+        def check(record: dict[str, Any]) -> None:
+            names = [c["name"] for c in record.get("checkpoints", [])]
+            replacing["yes"] = name in names
+            if not replacing["yes"] and len(names) >= MAX_CHECKPOINTS:
+                raise SandboxError(
+                    f"This sandbox already holds {MAX_CHECKPOINTS} checkpoints ({', '.join(names)}). "
+                    "Save under one of these names to replace it, or destroy the sandbox."
+                )
+
+        known = self._begin_busy(sandbox_id, check).get("checkpoints", [])
+        try:
+            self._vmrun.stop(vmx, soft=True)
+            self._wait_stopped(vmx)
+            if replacing["yes"]:
+                self._vmrun.delete_checkpoint(vmx, name)
+            self._vmrun.take_checkpoint(vmx, name)
+            self._vmrun.start(vmx)
+            self._wait_ready(vmx)
+            checkpoints = self._synced_checkpoints(vmx, known)
+        except Exception as exc:
+            if self._bring_back(sandbox_id, vmx, known):
+                raise SandboxError(
+                    f"Could not save the checkpoint: {exc}. The sandbox is usable again, but programs "
+                    "that were running may have been stopped."
+                ) from None
+            raise SandboxError(
+                f"Could not save the checkpoint ({exc}), and the sandbox could not be brought back, "
+                "so it was removed."
+            ) from None
+        self._end_busy(sandbox_id, checkpoints)
+        return CheckpointResult(name, replacing["yes"], [c["name"] for c in checkpoints])
+
+    def _restore(self, sandbox_id: str, name: str) -> list[str]:
+        name = self._checkpoint_name(name)
+        self._require(sandbox_id)
+        vmx = self._vmx(sandbox_id)
+
+        def check(record: dict[str, Any]) -> None:
+            names = [c["name"] for c in record.get("checkpoints", [])]
+            if name not in names:
+                raise SandboxError(
+                    f"No checkpoint named {name!r} in this sandbox (it has: {', '.join(names) or 'none'})."
+                )
+
+        known = self._begin_busy(sandbox_id, check).get("checkpoints", [])
+        try:
+            self._vmrun.stop(vmx)  # hard: whatever state it is in is being thrown away
+            self._wait_stopped(vmx)
+            self._vmrun.restore_checkpoint(vmx, name)
+            self._vmrun.start(vmx)
+            self._wait_ready(vmx)
+        except Exception as exc:
+            if self._bring_back(sandbox_id, vmx, known):
+                raise SandboxError(
+                    f"Could not restore the checkpoint: {exc}. The sandbox is usable again, but it may not "
+                    "be in the saved state."
+                ) from None
+            raise SandboxError(
+                f"Could not restore the checkpoint ({exc}), and the sandbox could not be brought back, "
+                "so it was removed."
+            ) from None
+        self._end_busy(sandbox_id)
+        return [c["name"] for c in known]
+
     # ---- keyboard and mouse ----------------------------------------------
 
     @staticmethod
@@ -527,8 +696,11 @@ class SandboxManager:
                 dead = not vmx.is_file() or (
                     running is not None and not any(same_path(vmx, path) for path in running)
                 )
-            else:  # "creating": another server may be mid-create, so only reap stuck ones
-                dead = now - record.get("created_at", 0) > stuck_after
+            else:  # "creating" or "busy": another server may be mid-operation, so only reap stuck ones
+                if record.get("status") == "busy":
+                    dead = now - record.get("busy_since", 0) > self._config.boot_timeout_seconds + 1200
+                else:
+                    dead = now - record.get("created_at", 0) > stuck_after
             if dead and self._try_teardown(sandbox_id, "orphaned (not running)"):
                 removed.append(sandbox_id)
 
@@ -683,6 +855,7 @@ class SandboxManager:
                 "network": record.get("network"),
                 "status": record.get("status"),
                 "age_seconds": int(now - record.get("created_at", now)),
+                "checkpoints": [c["name"] for c in record.get("checkpoints", [])],
             }
             for sandbox_id, record in sorted(self._store.all().items())
         ]

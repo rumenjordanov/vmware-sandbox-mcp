@@ -12,7 +12,7 @@ import pytest
 EXPECTED_TOOLS = sorted([
     "sandbox_create", "sandbox_run", "sandbox_start", "sandbox_check", "sandbox_stop",
     "sandbox_copy_in", "sandbox_copy_out", "sandbox_screenshot", "sandbox_click", "sandbox_type",
-    "sandbox_key", "sandbox_destroy", "sandbox_list",
+    "sandbox_key", "sandbox_destroy", "sandbox_list", "sandbox_checkpoint", "sandbox_restore",
 ])
 
 
@@ -74,6 +74,8 @@ def test_unconfigured_server_refuses_every_tool_with_the_reason(unconfigured):
         "sandbox_destroy": {"sandbox_id": "sbx-00000000"},
         "sandbox_copy_in": {"sandbox_id": "sbx-00000000", "host_path": "a", "guest_path": "/tmp/a"},
         "sandbox_click": {"sandbox_id": "sbx-00000000", "x": 1, "y": 1},
+        "sandbox_checkpoint": {"sandbox_id": "sbx-00000000", "name": "x"},
+        "sandbox_restore": {"sandbox_id": "sbx-00000000", "name": "x"},
     }
     for name, arguments in calls.items():
         result = unconfigured.request("tools/call", {"name": name, "arguments": arguments})

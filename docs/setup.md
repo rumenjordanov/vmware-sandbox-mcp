@@ -2,7 +2,7 @@
 
 Everything needed to go from a fresh VMware Workstation install to an agent using sandboxes. The [README](../README.md) has the short version.
 
-Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Web mode](#web-mode-setup) · [Keyboard and mouse](#keyboard-and-mouse)
+Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Web mode](#web-mode-setup) · [Keyboard and mouse](#keyboard-and-mouse) · [Checkpoints](#checkpoints)
 
 ## Base VM setup
 
@@ -139,3 +139,17 @@ What to know:
 - **Shortcuts with Ctrl+Alt** (such as switching to a text console with Ctrl+Alt+F3) did not reach the guest in testing.
 - **No scrolling or dragging yet**, and no clipboard.
 - `vmware-sandbox-mcp doctor` checks that input works and that the remote display is not reachable through any of your computer's network addresses.
+
+## Checkpoints
+
+`sandbox_checkpoint` saves a sandbox's disk under a name, and `sandbox_restore` rolls the sandbox back to it, undoing everything done since: files, installed packages, changed settings. It is for "try something risky, and go back if it goes wrong", and for keeping a sandbox that is set up the way you will want it again.
+
+How it works: the sandbox shuts down cleanly, VMware takes a snapshot of its disk while it is powered off, and the sandbox starts again. Saving takes about 25 seconds and restoring about the same; each checkpoint adds a few megabytes of disk, not a copy of the sandbox. A sandbox holds at most 5 checkpoints, listed by `sandbox_list`; saving under an existing name replaces that checkpoint. Checkpoints live in the sandbox's folder and disappear with it.
+
+What to know:
+
+- **Running programs are not saved.** The sandbox restarts for both operations, so background commands started with `sandbox_start` end, and so does anything else that was running.
+- **Files under `/tmp` are not saved.** On Debian 13, `/tmp` lives in memory and is emptied at every restart. Keep what should survive in the home directory.
+- **Memory is not saved.** VMware can also save a running sandbox's memory, but on the test machine that took over three minutes and 2 GB per checkpoint, so this uses disk-only checkpoints.
+- **While a checkpoint is saved or restored the sandbox is `busy`**, and other calls on it are refused until it is ready again. If saving fails, the sandbox is brought back running; if it cannot be brought back, it is removed and the error says so.
+- Checkpoints are only ever taken of a sandbox, never of the base VM.
