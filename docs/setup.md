@@ -6,22 +6,39 @@ Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · 
 
 ## Base VM setup
 
-1. Create a Linux VM in VMware Workstation (Debian 13 is what this was tested with). Keep it in its own folder.
-2. Inside the VM, install the guest tools and make sure bash, `timeout` and `tar` exist (they do on any standard Debian install):
+1. Create a Linux VM in VMware Workstation (Debian 13 is what this was tested with; Ubuntu should work). Keep it in its own folder, and leave its network adapter on NAT while you set it up, so it can download packages.
+2. Create the user account the server will log in as. Its name and password go into environment variables, never into this repository.
+3. Run the setup script **inside the VM**. It checks what is missing, shows you, and asks before it changes anything:
    ```
-   sudo apt-get install open-vm-tools
+   wget -O /tmp/prepare-base-vm.sh https://raw.githubusercontent.com/rumenjordanov/vmware-sandbox-mcp/main/scripts/prepare-base-vm.sh
+   su -
+   bash /tmp/prepare-base-vm.sh debian
    ```
-3. Create the user account the server will log in as. Its name and password go into environment variables, never into this repository.
-4. Optional, if the agent should be able to install software: give that user passwordless `sudo`:
-   ```
-   echo 'debian ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sandbox
-   chmod 440 /etc/sudoers.d/sandbox
-   ```
-   Installing packages also needs a sandbox created with `network="web"` or `"nat"`.
-5. **Shut the VM down completely** (not suspend), then take a snapshot, for example named `clean`. Every sandbox is a linked clone of this snapshot.
-6. Do not delete or move the base VM or that snapshot while sandboxes exist; linked clones read from it.
+   Replace `debian` with the account from step 2. It is safe to run again; it only changes what is not already right.
+4. **Shut the VM down completely** (not suspend), then take a snapshot, for example named `clean`. Every sandbox is a linked clone of this snapshot.
+5. Do not delete or move the base VM or that snapshot while sandboxes exist; linked clones read from it.
+6. From the host, run `vmware-sandbox-mcp doctor` to check the whole chain.
 
 To update the base image later: boot the base VM, make changes, power off, take a new snapshot, and point `VMSANDBOX_SNAPSHOT` at it.
+
+### What the script changes
+
+| Step | What it does | Where |
+|---|---|---|
+| packages | installs `open-vm-tools`, `sudo`, and everyday tools: git, curl, wget, build-essential, python3 with pip and venv, zip and unzip, jq | apt |
+| sudo | passwordless sudo for that one account, and `sudo` keeps the web-mode proxy settings, so plain `sudo apt-get install` works in a `web` sandbox | `/etc/sudoers.d/vmsandbox` |
+| autologin | the desktop logs that account in by itself, so screenshots show a desktop and not a login screen (GNOME with GDM only) | `/etc/gdm3/daemon.conf`, original kept as `daemon.conf.vmsandbox-original` |
+| desktop | no screen lock, no blank screen, no animations, no background update downloads (GNOME only) | `/etc/dconf/profile/user`, `/etc/dconf/db/local.d/00-vmsandbox` |
+| updates | switches off the background `apt` updates that can hold the package lock right after a sandbox boots | masks `apt-daily` and `unattended-upgrades` units |
+
+Options: `--check` only reports and works without root (exit code 0 means ready), `--no-tools` skips the everyday tools, `--no-autologin` leaves the login screen alone, `--keep-updates` leaves background updates on, `--yes` skips the question, and `--force` allows running on something that is not a VMware VM. The script refuses to change anything on a machine that is not a VMware VM, because it gives an account passwordless sudo and logs it in automatically. It must never run on your real computer.
+
+Things to know:
+
+- **Code in a sandbox can now use sudo**, so inside a sandbox it is root. That is the point of a throwaway VM, but it also means the base VM should hold nothing private: do not log in to personal accounts in it, because every sandbox starts as a copy.
+- **The base VM no longer updates itself.** Update it by hand now and then (boot it, `apt-get update && apt-get upgrade`, power off, new snapshot).
+- **Per-user desktop settings win** over the defaults the script writes. If you changed one of these settings for your account in the base VM, the script's value does not apply to it.
+- **To see what is missing without changing anything**, run `bash prepare-base-vm.sh --check debian` as the ordinary account. This works inside a sandbox too, which is a way to check a snapshot without starting the base VM.
 
 ## Check your setup
 

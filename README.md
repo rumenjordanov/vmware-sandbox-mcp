@@ -71,7 +71,7 @@ Every sandbox is a linked clone of one powered-off snapshot of a Linux VM that y
 
 ## Quick start
 
-**1. Prepare the base VM** (once). Create a Debian VM in VMware Workstation, install `open-vm-tools`, shut it down completely and take a snapshot named `clean`. Details: [setup guide](docs/setup.md#base-vm-setup).
+**1. Prepare the base VM** (once). Create a Debian VM in VMware Workstation and run [`scripts/prepare-base-vm.sh`](scripts/prepare-base-vm.sh) inside it. It installs the guest tools, sudo and everyday tools, and sets the desktop up to log in by itself. Then shut the VM down completely and take a snapshot named `clean`. Details: [setup guide](docs/setup.md#base-vm-setup).
 
 **2. Add the server to your MCP client.** For Claude Code, put this in `.mcp.json`:
 

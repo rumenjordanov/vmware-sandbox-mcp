@@ -376,7 +376,7 @@ class Doctor:
                 WARN,
                 "Installing software",
                 f"user {config.guest_user!r} has no passwordless sudo, so sandboxes cannot install packages",
-                "optional. See 'Base VM setup' in docs/setup.md.",
+                "optional. Run scripts/prepare-base-vm.sh inside the base VM (see docs/setup.md), then take a new snapshot.",
             )
 
 
