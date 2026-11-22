@@ -124,7 +124,7 @@ The server refuses to work with `web` mode set to VMnet0 (bridged), VMnet1 or VM
 
 ## Keyboard and mouse
 
-Off by default. With `VMSANDBOX_REMOTE_INPUT=on`, the agent can operate graphical programs: it looks with `sandbox_screenshot` and acts with `sandbox_click`, `sandbox_type` and `sandbox_key`. No change to the base VM and no admin rights are needed.
+Off by default. With `VMSANDBOX_REMOTE_INPUT=on`, the agent can operate graphical programs: it looks with `sandbox_screenshot` and acts with `sandbox_click`, `sandbox_scroll`, `sandbox_drag`, `sandbox_type` and `sandbox_key`. No change to the base VM and no admin rights are needed.
 
 <img src="images/desktop-menu.png" alt="A sandbox desktop after the agent clicked a window's menu button" width="640">
 
@@ -137,7 +137,7 @@ What to know:
 - **US keyboard layout is assumed** in the sandbox. Only plain English keyboard characters can be typed.
 - **A graphical guest starts at its login screen.** The agent does not know the guest password, so either set up automatic login in the base VM, or log in yourself. Whatever is typed is written to the audit log, except the guest password, which is blanked.
 - **Shortcuts with Ctrl+Alt** (such as switching to a text console with Ctrl+Alt+F3) did not reach the guest in testing.
-- **No scrolling or dragging yet**, and no clipboard.
+- **No clipboard.** Scrolling and dragging are there (`sandbox_scroll`, `sandbox_drag`).
 - `vmware-sandbox-mcp doctor` checks that input works and that the remote display is not reachable through any of your computer's network addresses.
 
 ## Checkpoints

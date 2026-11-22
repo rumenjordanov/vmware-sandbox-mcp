@@ -255,6 +255,44 @@ async def sandbox_click(
 
 
 @mcp.tool()
+async def sandbox_scroll(
+    sandbox_id: str, x: int, y: int, direction: Literal["up", "down", "left", "right"] = "down", amount: int = 3
+) -> str:
+    """Turn the mouse wheel at a position on a sandbox's screen, to scroll what is under it.
+
+    Use this to read a long page, document or list, or to move through a long menu.
+    x and y are pixels in the sandbox_screenshot image, counted from its top-left corner, and
+    should be over the thing to scroll: the wheel acts on whatever is under the pointer.
+    direction: "down" (default), "up", "left" or "right". amount: wheel clicks, 1 to 50
+    (default 3, a few lines each). Take another screenshot afterwards to see the result.
+    Only works if the user has switched keyboard and mouse input on.
+    """
+    await _call(lambda: _manager.scroll(sandbox_id, x, y, direction, amount))  # type: ignore[union-attr]
+    return f"Scrolled {direction} by {amount} at ({x}, {y})."
+
+
+@mcp.tool()
+async def sandbox_drag(
+    sandbox_id: str,
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    button: Literal["left", "right", "middle"] = "left",
+) -> str:
+    """Press the mouse button at one position, move to another, and let go.
+
+    Use this to move a window by its title bar, select text, drag a file into a folder,
+    resize a window by its edge, or move a slider. Positions are pixels in the
+    sandbox_screenshot image, counted from its top-left corner. The pointer moves in small
+    steps, as a hand would. Take another screenshot afterwards to see the result.
+    Only works if the user has switched keyboard and mouse input on.
+    """
+    await _call(lambda: _manager.drag(sandbox_id, from_x, from_y, to_x, to_y, button))  # type: ignore[union-attr]
+    return f"Dragged with the {button} button from ({from_x}, {from_y}) to ({to_x}, {to_y})."
+
+
+@mcp.tool()
 async def sandbox_type(sandbox_id: str, text: str) -> str:
     """Type text on a sandbox's keyboard, as if a person typed it.
 

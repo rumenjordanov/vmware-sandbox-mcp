@@ -258,3 +258,70 @@ def click(
         sleep(_CLICK_DELAY)
         client.pointer(x, y, 0)
         sleep(_CLICK_DELAY)
+
+
+# ---- wheel and drag ------------------------------------------------------------------
+
+_WHEEL = {"up": 8, "down": 16, "left": 32, "right": 64}   # RFB wheel "buttons"
+MAX_SCROLL_STEPS = 50
+_DRAG_STEPS = 12
+
+
+def _check_point(client: RfbClient, x: object, y: object) -> None:
+    for value in (x, y):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise InputError("x and y must be whole numbers (pixels in the screenshot).")
+    if not (0 <= x < client.width and 0 <= y < client.height):  # type: ignore[operator]
+        raise InputError(
+            f"({x}, {y}) is outside the sandbox's screen, which is {client.width} x {client.height} pixels."
+        )
+
+
+def scroll(
+    client: RfbClient,
+    x: int,
+    y: int,
+    direction: str = "down",
+    amount: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Turn the mouse wheel `amount` clicks with the pointer at (x, y)."""
+    if direction not in _WHEEL:
+        raise InputError("direction must be 'up', 'down', 'left' or 'right'.")
+    if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= MAX_SCROLL_STEPS:
+        raise InputError(f"amount must be a whole number from 1 to {MAX_SCROLL_STEPS}.")
+    _check_point(client, x, y)
+    mask = _WHEEL[direction]
+    client.pointer(x, y, 0)
+    sleep(_CLICK_DELAY)
+    for _ in range(amount):
+        client.pointer(x, y, mask)
+        sleep(0.02)
+        client.pointer(x, y, 0)
+        sleep(0.03)
+
+
+def drag(
+    client: RfbClient,
+    from_x: int,
+    from_y: int,
+    to_x: int,
+    to_y: int,
+    button: str = "left",
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Press a button at one point, move to another in small steps, release."""
+    if button not in _BUTTONS:
+        raise InputError("button must be 'left', 'right' or 'middle'.")
+    _check_point(client, from_x, from_y)
+    _check_point(client, to_x, to_y)
+    mask = _BUTTONS[button]
+    client.pointer(from_x, from_y, 0)
+    sleep(0.08)
+    client.pointer(from_x, from_y, mask)
+    sleep(0.1)
+    for step in range(1, _DRAG_STEPS + 1):   # programs need the in-between movements to follow a drag
+        client.pointer(from_x + (to_x - from_x) * step // _DRAG_STEPS, from_y + (to_y - from_y) * step // _DRAG_STEPS, mask)
+        sleep(0.02)
+    sleep(0.1)
+    client.pointer(to_x, to_y, 0)

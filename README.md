@@ -26,7 +26,7 @@ run anything in it, and throw it away. It runs on your own PC with VMware Workst
 You want an agent to run an install script from a forum, try an unknown package, or click through a desktop program. You do not want it doing that on your own machine.
 
 - **A full virtual machine, not a container.** Each sandbox is its own VM with its own kernel, created from a clean snapshot (about 25 seconds on the test machine) and deleted when the agent is done.
-- **The agent never sees VMware.** It gets 15 plain tools: create a computer, run a command, copy files, look at the screen, click, type, save a checkpoint and roll back to it, destroy. This is deliberately not a general VMware management server.
+- **The agent never sees VMware.** It gets 17 plain tools: create a computer, run a command, copy files, look at the screen, click, scroll, drag, type, save a checkpoint and roll back to it, destroy. This is deliberately not a general VMware management server.
 - **Your other VMs are off limits.** The server can only touch virtual machines it created itself. That is enforced in code and covered by tests, not left to the agent's good behaviour.
 - **Internet without your home network.** In `web` mode a sandbox can download from public websites but cannot reach your PC, your router or anything else on your network.
 - **Everything is logged.** Every command, file copy, click and web request goes into an audit log the agent cannot read or change.
@@ -122,7 +122,7 @@ It verifies the settings, creates one test sandbox, runs a command in it and del
 | `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
 | `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
 | `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
-| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. |
+| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. |\n| `sandbox_scroll(sandbox_id, x, y, direction, amount)` | Turns the mouse wheel at a position, to scroll what is under it. |\n| `sandbox_drag(sandbox_id, from_x, from_y, to_x, to_y, button)` | Drags with the mouse: moves a window, selects text, drags a file. |
 | `sandbox_type(sandbox_id, text)` | Types text on the sandbox's keyboard. |
 | `sandbox_key(sandbox_id, keys)` | Presses a key or shortcut, such as `Return` or `ctrl+c`. |
 | `sandbox_checkpoint(sandbox_id, name)` | Saves the sandbox's disk under a name (about 25 seconds; the sandbox restarts). Up to 5 per sandbox. See [checkpoints](docs/setup.md#checkpoints). |
@@ -207,8 +207,8 @@ Version 0.1. It works and is tested, and it is young.
 
 - **Tested on one setup:** Windows 11, VMware Workstation 25H2, Debian 13 guest.
 - **Not on PyPI yet.**
-- **Keyboard and mouse** assume a US keyboard layout, and have no scrolling or dragging yet.
-- **Planned:** isolating `web` sandboxes from each other, a site allowlist for `web` mode, scrolling and dragging, a PyPI release.
+- **Keyboard and mouse** assume a US keyboard layout.
+- **Planned:** isolating `web` sandboxes from each other, a site allowlist for `web` mode, a PyPI release.
 
 Bug reports and pull requests are welcome. If this is useful to you, a star helps other people find it.
 

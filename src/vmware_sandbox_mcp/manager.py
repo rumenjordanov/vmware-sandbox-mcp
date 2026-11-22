@@ -256,6 +256,28 @@ class SandboxManager:
             lambda: self._with_input(sandbox_id, lambda c: remote_input.click(c, x, y, button, double, self._sleep)),
         )
 
+    def scroll(self, sandbox_id: str, x: int, y: int, direction: str = "down", amount: int = 3) -> None:
+        """Turn the mouse wheel at a pixel position of the sandbox's screen."""
+        self._audited(
+            "scroll",
+            {"sandbox_id": sandbox_id, "x": x, "y": y, "direction": direction, "amount": amount},
+            lambda: self._with_input(
+                sandbox_id, lambda c: remote_input.scroll(c, x, y, direction, amount, self._sleep)
+            ),
+        )
+
+    def drag(
+        self, sandbox_id: str, from_x: int, from_y: int, to_x: int, to_y: int, button: str = "left"
+    ) -> None:
+        """Press a mouse button at one position, move to another, release."""
+        self._audited(
+            "drag",
+            {"sandbox_id": sandbox_id, "from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "button": button},
+            lambda: self._with_input(
+                sandbox_id, lambda c: remote_input.drag(c, from_x, from_y, to_x, to_y, button, self._sleep)
+            ),
+        )
+
     def type_text(self, sandbox_id: str, text: str) -> int:
         """Type text on the sandbox's keyboard. Returns the number of keys typed."""
         return self._audited(

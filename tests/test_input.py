@@ -486,3 +486,98 @@ def test_password_is_never_listed_or_logged(ready):
 
 def test_remote_display_port_lookup(ready, env):
     assert ready.manager.remote_display_port(ready.sid) == ready.display.port
+
+
+# ---- scrolling and dragging --------------------------------------------------------------
+
+@pytest.mark.parametrize("direction,mask", [("up", 8), ("down", 16), ("left", 32), ("right", 64)])
+def test_scroll_turns_the_wheel_the_given_number_of_clicks(display, direction, mask):
+    client = RfbClient(display.port, "Passw0rd")
+    remote_input.scroll(client, 640, 400, direction, 4, NO_SLEEP)
+    settle(display, 9, "pointer")
+    client.close()
+    assert display.pointers() == [(640, 400, 0)] + [(640, 400, mask), (640, 400, 0)] * 4
+
+
+def test_scroll_defaults_to_three_clicks_down(display):
+    client = RfbClient(display.port, "Passw0rd")
+    remote_input.scroll(client, 5, 6, sleep=NO_SLEEP)
+    settle(display, 7, "pointer")
+    client.close()
+    assert [mask for _, _, mask in display.pointers()] == [0, 16, 0, 16, 0, 16, 0]
+
+
+@pytest.mark.parametrize("kwargs,message", [
+    ({"direction": "sideways"}, "direction"), ({"direction": None}, "direction"), ({"direction": "UP"}, "direction"),
+    ({"amount": 0}, "amount"), ({"amount": 51}, "amount"), ({"amount": True}, "amount"),
+    ({"amount": 2.5}, "amount"), ({"amount": "3"}, "amount"),
+    ({"x": -1}, "outside"), ({"y": 800}, "outside"), ({"x": 1280}, "outside"), ({"x": 1.5}, "whole numbers"),
+    ({"y": "5"}, "whole numbers"), ({"x": True}, "whole numbers"),
+])
+def test_bad_scrolls_are_refused_before_any_event_is_sent(display, kwargs, message):
+    client = RfbClient(display.port, "Passw0rd")
+    arguments = {"x": 10, "y": 10, "direction": "down", "amount": 3, **kwargs}
+    with pytest.raises(InputError, match=message):
+        remote_input.scroll(client, arguments["x"], arguments["y"], arguments["direction"], arguments["amount"], NO_SLEEP)
+    client.close()
+    assert display.events == []
+
+
+def test_drag_presses_moves_in_steps_and_releases_at_the_target(display):
+    client = RfbClient(display.port, "Passw0rd")
+    remote_input.drag(client, 100, 200, 700, 440, "left", NO_SLEEP)
+    settle(display, 15, "pointer")
+    client.close()
+    events = display.pointers()
+    assert events[0] == (100, 200, 0) and events[1] == (100, 200, 1)    # arrive, press
+    moves = events[2:-1]
+    assert len(moves) == 12 and all(mask == 1 for _, _, mask in moves)  # held down all the way
+    xs, ys = [m[0] for m in moves], [m[1] for m in moves]
+    assert xs == sorted(xs) and ys == sorted(ys) and (xs[-1], ys[-1]) == (700, 440)
+    assert len(set(xs)) > 6                                             # real steps, not a jump
+    assert events[-1] == (700, 440, 0)                                  # released at the target
+
+
+@pytest.mark.parametrize("button,mask", [("left", 1), ("middle", 2), ("right", 4)])
+def test_drag_can_use_any_button_and_go_backwards(display, button, mask):
+    client = RfbClient(display.port, "Passw0rd")
+    remote_input.drag(client, 900, 700, 50, 20, button, NO_SLEEP)
+    settle(display, 15, "pointer")
+    client.close()
+    events = display.pointers()
+    assert events[1] == (900, 700, mask) and events[-1] == (50, 20, 0)
+    assert [m[0] for m in events[2:-1]] == sorted((m[0] for m in events[2:-1]), reverse=True)
+
+
+@pytest.mark.parametrize("kwargs,message", [
+    ({"button": "side"}, "button"), ({"from_x": -1}, "outside"), ({"to_y": 800}, "outside"),
+    ({"to_x": 5000}, "outside"), ({"from_y": 1.5}, "whole numbers"), ({"to_x": "7"}, "whole numbers"),
+    ({"from_x": True}, "whole numbers"),
+])
+def test_bad_drags_are_refused_before_any_event_is_sent(display, kwargs, message):
+    client = RfbClient(display.port, "Passw0rd")
+    a = {"from_x": 10, "from_y": 10, "to_x": 50, "to_y": 50, "button": "left", **kwargs}
+    with pytest.raises(InputError, match=message):
+        remote_input.drag(client, a["from_x"], a["from_y"], a["to_x"], a["to_y"], a["button"], NO_SLEEP)
+    client.close()
+    assert display.events == []
+
+
+def test_scroll_and_drag_through_the_manager_are_audited(ready):
+    ready.manager.scroll(ready.sid, 300, 300, "up", 2)
+    ready.manager.drag(ready.sid, 10, 10, 200, 100, "right")
+    with pytest.raises(SandboxError, match="amount"):
+        ready.manager.scroll(ready.sid, 300, 300, "up", 99)
+    settle(ready.display, 20, "pointer")
+    scrolled, dragged, refused = ready.audit()[-3:]
+    assert (scrolled["event"], scrolled["direction"], scrolled["amount"], scrolled["ok"]) == ("scroll", "up", 2, True)
+    assert (dragged["event"], dragged["from_x"], dragged["to_x"], dragged["button"]) == ("drag", 10, 200, "right")
+    assert refused["ok"] is False and "amount" in refused["error"]
+    assert ready.display.pointers()[1] == (300, 300, 8)
+
+
+def test_scroll_and_drag_need_keyboard_and_mouse_switched_on(env):
+    sid = env.manager.create()
+    for operation in (lambda: env.manager.scroll(sid, 1, 1), lambda: env.manager.drag(sid, 1, 1, 5, 5)):
+        with pytest.raises(SandboxError, match="not available"):
+            operation()

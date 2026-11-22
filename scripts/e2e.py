@@ -88,12 +88,12 @@ def main() -> int:
     sandbox_id = None
     try:
         names = [t["name"] for t in client.request("tools/list")["tools"]]
-        check("server exposes exactly the 15 tools", sorted(names) == sorted([
+        check("server exposes exactly the 17 tools", sorted(names) == sorted([
             "sandbox_create", "sandbox_run", "sandbox_copy_in", "sandbox_copy_out",
             "sandbox_screenshot", "sandbox_destroy", "sandbox_list",
             "sandbox_start", "sandbox_check", "sandbox_stop",
             "sandbox_click", "sandbox_type", "sandbox_key",
-            "sandbox_checkpoint", "sandbox_restore",
+            "sandbox_checkpoint", "sandbox_restore", "sandbox_scroll", "sandbox_drag",
         ]), names)
 
         created = client.tool("sandbox_create")
@@ -267,6 +267,8 @@ def main() -> int:
             ctrl = client.tool("sandbox_run", sandbox_id=sandbox_id, timeout_seconds=30,
                                command="cat /tmp/ctrlc.txt; pgrep -x sleep | wc -l")["structuredContent"]
             check("a shortcut (ctrl+c) reaches the program", ctrl["stdout"].split() == ["interrupted", "0"], ctrl)
+            tool_ok("sandbox_scroll", x=640, y=400, direction="up", amount=5)
+            tool_ok("sandbox_drag", from_x=300, from_y=300, to_x=500, to_y=320)
             outside = client.tool("sandbox_click", sandbox_id=sandbox_id, x=5000, y=10)
             check("a click outside the screen is refused", bool(outside.get("isError")), text(outside))
             log_text = audit_path.read_text(encoding="utf-8")
