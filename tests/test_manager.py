@@ -15,7 +15,7 @@ def test_create_clones_hardens_then_boots(env):
     assert 'ethernet0.present = "FALSE"' in text  # network defaults to none
     assert (vmx.parent / MARKER).is_file()
     assert env.manager.list() == [
-        {"sandbox_id": sandbox_id, "network": "none", "status": "ready", "age_seconds": 0, "memory_mb": 2048, "cpus": 2, "checkpoints": []}
+        {"sandbox_id": sandbox_id, "network": "none", "status": "ready", "age_seconds": 0, "image": "Snapshot 1", "memory_mb": 2048, "cpus": 2, "checkpoints": []}
     ]
 
 

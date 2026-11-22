@@ -88,12 +88,12 @@ def main() -> int:
     sandbox_id = None
     try:
         names = [t["name"] for t in client.request("tools/list")["tools"]]
-        check("server exposes exactly the 17 tools", sorted(names) == sorted([
+        check("server exposes exactly the 18 tools", sorted(names) == sorted([
             "sandbox_create", "sandbox_run", "sandbox_copy_in", "sandbox_copy_out",
             "sandbox_screenshot", "sandbox_destroy", "sandbox_list",
             "sandbox_start", "sandbox_check", "sandbox_stop",
             "sandbox_click", "sandbox_type", "sandbox_key",
-            "sandbox_checkpoint", "sandbox_restore", "sandbox_scroll", "sandbox_drag",
+            "sandbox_checkpoint", "sandbox_restore", "sandbox_scroll", "sandbox_drag", "sandbox_images",
         ]), names)
 
         created = client.tool("sandbox_create")
@@ -214,6 +214,25 @@ def main() -> int:
         check("audit log records the refused path traversal",
               mine[7]["ok"] is False and mine[7]["host_path"] == "../e2e-escape.txt", mine[7])
         sandbox_id = None
+
+        if os.environ.get("VMSANDBOX_IMAGES", "").strip():
+            images = client.tool("sandbox_images")["structuredContent"]["result"]
+            check("sandbox_images lists the default first, then the others",
+                  len(images) >= 2 and images[0]["default"] and not any(i["default"] for i in images[1:]), images)
+            other = images[1]["name"]
+            made = client.tool("sandbox_create", image=other)
+            check(f"sandbox_create(image={other!r}) succeeds", not made.get("isError"), text(made))
+            sandbox_id = text(made).strip()
+            listed = client.tool("sandbox_list")["structuredContent"]["result"]
+            check("sandbox_list shows the image",
+                  [s["image"] for s in listed if s["sandbox_id"] == sandbox_id] == [other], listed)
+            client.tool("sandbox_destroy", sandbox_id=sandbox_id)
+            unknown = client.tool("sandbox_create", image="no-such-image")
+            check("an unknown image is refused and the choices are named",
+                  bool(unknown.get("isError")) and images[0]["name"] in text(unknown), text(unknown))
+            sandbox_id = None
+        else:
+            print("  (VMSANDBOX_IMAGES not set; skipping the image checks)")
 
         small = client.tool("sandbox_create", memory_mb=1024, cpus=1)
         check("sandbox_create(memory_mb=1024, cpus=1) succeeds", not small.get("isError"), text(small))

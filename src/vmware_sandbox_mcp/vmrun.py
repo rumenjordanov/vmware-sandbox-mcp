@@ -165,6 +165,8 @@ class VmrunClient:
         return [line.strip() for line in out.splitlines()[1:] if line.strip()]
 
     def clone(self, dest_vmx: str | os.PathLike[str], snapshot: str, name: str) -> None:
+        if not isinstance(snapshot, str) or not snapshot or any(ord(ch) < 32 for ch in snapshot):
+            raise ForbiddenTargetError(f"Refused: {snapshot!r} is not a usable snapshot name.")
         self._run(
             "clone",
             self._base_vmx,

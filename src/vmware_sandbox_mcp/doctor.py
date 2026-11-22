@@ -120,6 +120,9 @@ class Doctor:
                 self._report(SKIP, "Sandbox boot test", "skipped until the problems above are fixed")
             else:
                 self._check_boot(config, vmrun)
+                for name, _ in config.images:
+                    if name != config.snapshot:
+                        self._check_image_boot(config, vmrun, name)
                 if config.web_vnet:
                     self._check_web(config, vmrun)
 
@@ -171,7 +174,27 @@ class Doctor:
                 f"{config.snapshot!r} was taken while the VM was running",
                 "shut the base VM down completely and take a new snapshot.",
             )
-        return self._report(OK, "Snapshot", f"{config.snapshot!r} exists and is powered off")
+        good = self._report(OK, "Snapshot", f"{config.snapshot!r} exists and is powered off")
+        for name, _ in config.images:
+            if name == config.snapshot:
+                continue
+            if name not in names:
+                good = self._report(
+                    FAIL,
+                    f"Image {name!r}",
+                    f"the base VM has no snapshot with that name (found: {', '.join(repr(n) for n in names) or 'none'})",
+                    "take that snapshot, or remove the entry from VMSANDBOX_IMAGES.",
+                ) and good
+            elif snapshot_powered_on(config.base_vmx, name):
+                good = self._report(
+                    FAIL,
+                    f"Image {name!r}",
+                    "it was taken while the VM was running",
+                    "shut the base VM down completely and take the snapshot again.",
+                ) and good
+            else:
+                self._report(OK, f"Image {name!r}", "exists and is powered off")
+        return good
 
     def _check_folders(self, config: Config) -> bool:
         good = True
@@ -376,6 +399,20 @@ class Doctor:
         except OSError:
             return False
         return True
+
+    def _check_image_boot(self, config: Config, vmrun: VmrunClient, name: str) -> None:
+        manager = self._manager(config, vmrun)
+        started = self._clock()
+        try:
+            sandbox_id = manager.create("none", image=name)
+        except SandboxError as exc:
+            self._report(FAIL, f"Image {name!r} boots", str(exc))
+            return
+        self._report(OK, f"Image {name!r} boots", f"ready in {self._clock() - started:.0f}s, login accepted")
+        try:
+            manager.destroy(sandbox_id)
+        except SandboxError as exc:
+            self._report(FAIL, "Cleanup", f"could not destroy test sandbox {sandbox_id}: {exc}")
 
     def _check_guest(self, manager: SandboxManager, sandbox_id: str, config: Config) -> None:
         try:

@@ -293,6 +293,56 @@ def test_the_doctors_proxy_gets_the_list(webdoc):
     assert seen == [("pypi.org",)]
 
 
+def _with_images(doc, extra_vmsd=""):
+    doc.fake.base_snapshots[:] = ["Snapshot 1", "dev", "gone-from-vmsd"]
+    doc.base_vmx.with_suffix(".vmsd").write_text(
+        VMSD + 'snapshot2.uid = "3"\nsnapshot2.filename = "dev.vmsn"\nsnapshot2.displayName = "dev"\n' + extra_vmsd,
+        encoding="utf-8")
+    doc.settings["VMSANDBOX_IMAGES"] = "dev=With tools"
+
+
+def test_extra_images_are_checked_and_each_is_booted(doc):
+    _with_images(doc)
+    code, results = doc.run()
+    assert code == 0
+    assert results["Image 'dev'"] == "OK" and results["Image 'dev' boots"] == "OK"
+    assert doc.fake.clone_snapshots == ["Snapshot 1", "dev"]     # the default first, then the extra image
+    assert not doc.fake.running and [p.name for p in doc.clones.iterdir() if p.is_dir()] == []
+
+
+def test_an_image_that_is_not_a_snapshot_is_a_failure_and_nothing_is_booted(doc):
+    _with_images(doc)
+    doc.settings["VMSANDBOX_IMAGES"] = "dev=ok;missing=not a snapshot"
+    code, results = doc.run()
+    assert code == 1 and results["Image 'missing'"] == "FAIL" and results["Sandbox boot test"] == "SKIP"
+    assert "clone" not in doc.fake.commands()
+
+
+def test_an_image_taken_while_the_vm_was_running_is_a_failure(doc):
+    _with_images(doc)
+    doc.base_vmx.with_name("dev.vmem").write_bytes(b"")
+    doc.base_vmx.with_suffix(".vmsd").write_text(
+        VMSD + 'snapshot2.uid = "3"\nsnapshot2.filename = "dev.vmsn"\nsnapshot2.displayName = "dev"\nsnapshot2.type = "1"\n',
+        encoding="utf-8")
+    code, results = doc.run()
+    assert code == 1 and results["Image 'dev'"] == "FAIL"
+
+
+def test_no_boot_flag_skips_booting_images_too(doc):
+    _with_images(doc)
+    code, results = doc.run(boot=False)
+    assert code == 0 and results["Image 'dev'"] == "OK" and "Image 'dev' boots" not in results
+    assert "clone" not in doc.fake.commands()
+
+
+def test_a_broken_extra_image_that_will_not_boot_is_reported(doc):
+    _with_images(doc)
+    doc.fake.clone_fails_for.add("dev")
+    code, results = doc.run()
+    assert code == 1 and results["Image 'dev' boots"] == "FAIL" and results["Sandbox boot test"] == "OK"
+    assert not doc.fake.running and [p.name for p in doc.clones.iterdir() if p.is_dir()] == []
+
+
 def test_cli_dispatches_to_doctor(monkeypatch):
     seen = {}
     monkeypatch.setattr("vmware_sandbox_mcp.doctor.main", lambda argv: seen.setdefault("argv", argv) and 0 or 0)

@@ -7,6 +7,7 @@ What vmware-sandbox-mcp enforces, what it does not, and what the audit log recor
 What the server enforces, in code and covered by tests:
 
 - **It only touches VMs it created.** Every VMware call goes through one wrapper class with a command allowlist. The base VM may only be read (`listSnapshots`) and cloned from; it is never started, stopped, modified or deleted. Every other command is refused unless its target is a `.vmx` at `<clones folder>/<sandbox id>/`, after resolving `..`, symlinks and junctions.
+- **Base images are an allowlist.** An agent can only start from the snapshots you listed in `VMSANDBOX_IMAGES` (and the default). The name is checked before anything is cloned, and a name with control characters is refused again by the VMware wrapper. Cloning from a snapshot is the only thing ever done to the base VM.
 - **It only deletes what it marked.** A folder is removed only if it is directly inside the clones folder, is named like a sandbox id, and contains the marker file the server wrote. Anything else in the clones folder is left alone.
 - **Isolation before first boot.** Each clone's `.vmx` is rewritten before it ever starts: shared folders off, clipboard and drag-and-drop off, and the CD-ROM, USB controller, sound card and serial/parallel ports removed.
 - **No network by default.** `network="none"` removes the network adapter from the clone entirely.

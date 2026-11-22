@@ -38,6 +38,7 @@ class Config:
     boot_timeout_seconds: int = 180
     max_memory_mb: int | None = None  # the most an agent may ask for; None means the base VM's own size
     max_cpus: int | None = None
+    images: tuple[tuple[str, str], ...] = ()  # (snapshot name, description) an agent may choose besides the default
     audit_log: Path | None = None
     # network="web": private VMware network + filtering proxy. Off unless both are set.
     web_vnet: str | None = None
@@ -80,6 +81,29 @@ def _optional_int(env: Mapping[str, str], name: str, minimum: int, maximum: int)
     if not minimum <= value <= maximum:
         raise ConfigError(f"{name} must be from {minimum} to {maximum}.")
     return value
+
+
+MAX_IMAGES = 20
+
+
+def _parse_images(env: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+    """VMSANDBOX_IMAGES: "name=what it contains;other name=what it contains". The "=text" is optional."""
+    raw = env.get("VMSANDBOX_IMAGES", "").strip()
+    images: dict[str, str] = {}
+    for entry in (part for part in raw.split(";") if part.strip()):
+        name, _, description = entry.partition("=")
+        name, description = name.strip(), description.strip()
+        for label, value, limit in (("name", name, 80), ("description", description, 200)):
+            if any(ord(ch) < 32 for ch in value) or len(value) > limit:
+                raise ConfigError(
+                    f"VMSANDBOX_IMAGES: an image {label} may not hold control characters or be longer than {limit} characters."
+                )
+        if not name:
+            raise ConfigError("VMSANDBOX_IMAGES: an entry has no snapshot name. Use name=description;name=description.")
+        images.setdefault(name, description)
+    if len(images) > MAX_IMAGES:
+        raise ConfigError(f"VMSANDBOX_IMAGES: at most {MAX_IMAGES} images can be listed.")
+    return tuple(images.items())
 
 
 def _find_vmrun(env: Mapping[str, str]) -> Path:
@@ -235,6 +259,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         boot_timeout_seconds=_positive_int(env, "VMSANDBOX_BOOT_TIMEOUT_SECONDS", 180),
         max_memory_mb=_optional_int(env, "VMSANDBOX_MAX_MEMORY_MB", 512, 1_048_576),
         max_cpus=_optional_int(env, "VMSANDBOX_MAX_CPUS", 1, 32),
+        images=_parse_images(env),
         audit_log=audit_log,
         remote_input=_switch(env, "VMSANDBOX_REMOTE_INPUT"),
         **_web_settings(env),  # type: ignore[arg-type]

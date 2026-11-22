@@ -26,7 +26,7 @@ run anything in it, and throw it away. It runs on your own PC with VMware Workst
 You want an agent to run an install script from a forum, try an unknown package, or click through a desktop program. You do not want it doing that on your own machine.
 
 - **A full virtual machine, not a container.** Each sandbox is its own VM with its own kernel, created from a clean snapshot (about 25 seconds on the test machine) and deleted when the agent is done.
-- **The agent never sees VMware.** It gets 17 plain tools: create a computer, run a command, copy files, look at the screen, click, scroll, drag, type, save a checkpoint and roll back to it, destroy. This is deliberately not a general VMware management server.
+- **The agent never sees VMware.** It gets 18 plain tools: create a computer, run a command, copy files, look at the screen, click, scroll, drag, type, save a checkpoint and roll back to it, destroy. This is deliberately not a general VMware management server.
 - **Your other VMs are off limits.** The server can only touch virtual machines it created itself. That is enforced in code and covered by tests, not left to the agent's good behaviour.
 - **Internet without your home network.** In `web` mode a sandbox can download from public websites but cannot reach your PC, your router or anything else on your network.
 - **Everything is logged.** Every command, file copy, click and web request goes into an audit log the agent cannot read or change.
@@ -114,7 +114,8 @@ It verifies the settings, creates one test sandbox, runs a command in it and del
 
 | Tool | What it does |
 |---|---|
-| `sandbox_create(network, memory_mb, cpus)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"`. `memory_mb` and `cpus` are optional: smaller than the base VM by default, never larger than you allow. Returns a `sandbox_id`. |
+| `sandbox_create(network, memory_mb, cpus, image)` | New sandbox from a base image. `network` is `"none"` (default), `"web"` or `"nat"`. `memory_mb` and `cpus` are optional: smaller than the base VM by default, never larger than you allow. `image` picks one of the images you offer (default: the main one). Returns a `sandbox_id`. |
+| `sandbox_images()` | The base images a sandbox can start from, and what each contains. |
 | `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
 | `sandbox_start(sandbox_id, command)` | Starts a command that keeps running in the background (a server, a long build). Returns a `job_id` at once. |
 | `sandbox_check(sandbox_id, job_id)` | Whether a background command is running, exited or stopped, its exit code, and its output so far. |
@@ -169,6 +170,7 @@ All configuration is through environment variables. If a required one is missing
 | `VMSANDBOX_GUEST_USER` | yes | | Login name inside the base VM. |
 | `VMSANDBOX_GUEST_PASSWORD` | yes | | Password for that login. |
 | `VMSANDBOX_MAX_SANDBOXES` | no | `3` | Maximum sandboxes existing at once. |
+| `VMSANDBOX_IMAGES` | no | only the default | Other snapshots of the base VM an agent may start from, as `name=description;name=description`. See [several base images](docs/setup.md#several-base-images). |
 | `VMSANDBOX_MAX_MEMORY_MB` | no | the base VM's memory | The most memory an agent may ask for when it creates a sandbox. |
 | `VMSANDBOX_MAX_CPUS` | no | the base VM's CPUs | The most CPUs an agent may ask for. |
 | `VMSANDBOX_MAX_AGE_MINUTES` | no | `120` | Sandboxes older than this are destroyed automatically. |

@@ -2,7 +2,7 @@
 
 Everything needed to go from a fresh VMware Workstation install to an agent using sandboxes. The [README](../README.md) has the short version.
 
-Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Web mode](#web-mode-setup) · [Keyboard and mouse](#keyboard-and-mouse) · [Checkpoints](#checkpoints) · [Sandbox size](#sandbox-size)
+Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Web mode](#web-mode-setup) · [Keyboard and mouse](#keyboard-and-mouse) · [Checkpoints](#checkpoints) · [Sandbox size](#sandbox-size) · [Several base images](#several-base-images)
 
 ## Base VM setup
 
@@ -180,3 +180,18 @@ A sandbox gets the memory and CPUs of the base VM. `sandbox_create` also takes o
 - **The memory and CPUs come out of your computer.** Three sandboxes of 4 GB each are 12 GB of your RAM while they run, next to whatever else you have running. Pick limits with that in mind; the cap on the number of sandboxes (`VMSANDBOX_MAX_SANDBOXES`) still applies.
 - **Values:** memory is in megabytes, a multiple of 4, at least 512; CPUs from 1 to 32. A request over the limit is refused with the maximum in the message, and nothing is left behind. `sandbox_list` shows each sandbox's size.
 - A sandbox keeps its size through checkpoints and restores.
+
+## Several base images
+
+`VMSANDBOX_SNAPSHOT` is the image sandboxes start from. If you have more snapshots of the base VM, for example a plain system and one with a lot of software installed, you can offer them to the agent, which then picks one when it creates a sandbox (`sandbox_create(image="...")`) and can read what each contains from `sandbox_images`.
+
+```
+VMSANDBOX_IMAGES=clean=Debian 13 with sudo, auto-login and everyday tools;Snapshot 1=Plain Debian 13 as installed, no sudo and no extra tools
+```
+
+- **Format:** entries separated by `;`, each a snapshot name, optionally followed by `=` and a description. The description is what the agent reads, so say what is installed. Names are exact (capitals and spaces count).
+- **Only what you list can be chosen.** A snapshot of the base VM that is not on the list cannot be used by the agent, and neither can any other VM. The default (`VMSANDBOX_SNAPSHOT`) is always available; list it too if you want to describe it.
+- **Making another image:** in VMware, power the base VM off, go to the snapshot you want to start from (VM > Snapshot > Snapshot Manager, "Go To"), start the VM, install what you want, shut it down completely, and take a new snapshot with a clear name. The agent never changes the base VM; only you do.
+- **Each image must be taken with the VM powered off.** `vmware-sandbox-mcp doctor` checks that every listed snapshot exists and was taken powered off, and boots a sandbox from each to see that it starts and the login works.
+- Checkpoints, memory and CPU choices, and the network mode all work with any image. `sandbox_list` shows which image each sandbox came from.
+- Images share the base VM's disk history, so they take little extra space, and the base VM and its snapshots must stay where they are while sandboxes exist.

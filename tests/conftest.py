@@ -84,6 +84,9 @@ class FakeVmrunProcess:
         self.snapshot_taken_while_running: list[bool] = []
         self.hooks: dict[str, object] = {}  # command -> callable run when vmrun is asked to do it
         self.ignore_stop = False  # a guest that never shuts down
+        self.base_snapshots = ["Snapshot 1"]  # the snapshots of the base VM
+        self.clone_snapshots: list[str] = []  # which snapshot each clone was made from
+        self.clone_fails_for: set[str] = set()  # snapshots that cannot be cloned
         self.screen = b"\x89PNG\r\n\x1a\nfake-image"
 
     def _job(self, action: str, job_id: str) -> tuple[bytes, bytes, int]:
@@ -132,7 +135,7 @@ class FakeVmrunProcess:
             if Path(args[0]).name.startswith("sbx-"):
                 names = self.snapshots.get(args[0], [])
             else:
-                names = ["Snapshot 1"]
+                names = list(self.base_snapshots)
             return 0, f"Total snapshots: {len(names)}\n" + "\n".join(names)
         if command == "snapshot":
             self.snapshot_taken_while_running.append(args[0] in self.running)
@@ -158,6 +161,12 @@ class FakeVmrunProcess:
             self.disks.pop((args[0], args[1]), None)
             return 0, ""
         if command == "clone":
+            wanted = args[3].split("=", 1)[1]
+            self.clone_snapshots.append(wanted)
+            if wanted in self.clone_fails_for:
+                return 255, "Error: simulated clone failure"
+            if wanted not in self.base_snapshots:
+                return 255, f"Error: the snapshot {wanted!r} does not exist"
             dest = Path(args[1])
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(BASE_VMX_TEXT, encoding="utf-8")

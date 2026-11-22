@@ -72,7 +72,10 @@ async def _call(fn: Callable[..., T], *args: Any) -> T:
 
 @mcp.tool()
 async def sandbox_create(
-    network: Literal["none", "web", "nat"] = "none", memory_mb: int | None = None, cpus: int | None = None
+    network: Literal["none", "web", "nat"] = "none",
+    memory_mb: int | None = None,
+    cpus: int | None = None,
+    image: str | None = None,
 ) -> str:
     """Create a fresh, disposable Linux computer (a "sandbox") and wait until it is ready to use.
 
@@ -97,10 +100,26 @@ async def sandbox_create(
     limits how much you may ask for: if you ask for too much, the error says the maximum.
     memory_mb is in megabytes, a multiple of 4, at least 512.
 
+    image: which base image the sandbox starts from. Leave it out for the default. Call
+    sandbox_images to see the choices and what each contains (for example a plain system, or
+    one with extra tools already installed).
+
     Takes up to a few minutes. Returns the sandbox_id to pass to the other sandbox tools.
     Destroy the sandbox with sandbox_destroy when you are finished.
     """
-    return await _call(lambda: _manager.create(network, memory_mb, cpus))  # type: ignore[union-attr]
+    return await _call(lambda: _manager.create(network, memory_mb, cpus, image))  # type: ignore[union-attr]
+
+
+@mcp.tool()
+async def sandbox_images() -> list[dict[str, Any]]:
+    """List the base images a sandbox can start from, and what each one contains.
+
+    Use this before sandbox_create when a task needs particular software already installed,
+    or when you want the plainest system. Returns one entry per image: name (pass it as
+    `image` to sandbox_create), description, and default (true for the image used when you
+    leave image out). Often there is only the default.
+    """
+    return await _call(lambda: _manager.images())  # type: ignore[union-attr]
 
 
 @mcp.tool()
@@ -380,7 +399,7 @@ async def sandbox_list() -> list[dict[str, Any]]:
     Use this to find a sandbox_id you lost track of, or to check whether old sandboxes
     should be destroyed. Returns one entry per sandbox with its sandbox_id, network mode
     ("none", "web" or "nat"), status ("ready", or "busy" while a checkpoint is being saved
-    or restored), age in seconds, memory_mb, cpus, and the names of its checkpoints. Returns an empty list
+    or restored), age in seconds, image, memory_mb, cpus, and the names of its checkpoints. Returns an empty list
     if there are none.
     """
     return await _call(lambda: _manager.list())  # type: ignore[union-attr]

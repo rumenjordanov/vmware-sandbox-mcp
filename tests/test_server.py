@@ -13,7 +13,7 @@ EXPECTED_TOOLS = sorted([
     "sandbox_create", "sandbox_run", "sandbox_start", "sandbox_check", "sandbox_stop",
     "sandbox_copy_in", "sandbox_copy_out", "sandbox_screenshot", "sandbox_click", "sandbox_type",
     "sandbox_key", "sandbox_destroy", "sandbox_list", "sandbox_checkpoint", "sandbox_restore",
-    "sandbox_scroll", "sandbox_drag",
+    "sandbox_scroll", "sandbox_drag", "sandbox_images",
 ])
 
 
@@ -75,6 +75,7 @@ def test_unconfigured_server_refuses_every_tool_with_the_reason(unconfigured):
         "sandbox_destroy": {"sandbox_id": "sbx-00000000"},
         "sandbox_copy_in": {"sandbox_id": "sbx-00000000", "host_path": "a", "guest_path": "/tmp/a"},
         "sandbox_click": {"sandbox_id": "sbx-00000000", "x": 1, "y": 1},
+        "sandbox_images": {},
         "sandbox_scroll": {"sandbox_id": "sbx-00000000", "x": 1, "y": 1},
         "sandbox_drag": {"sandbox_id": "sbx-00000000", "from_x": 1, "from_y": 1, "to_x": 5, "to_y": 5},
         "sandbox_checkpoint": {"sandbox_id": "sbx-00000000", "name": "x"},

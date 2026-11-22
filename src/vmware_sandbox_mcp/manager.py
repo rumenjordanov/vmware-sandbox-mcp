@@ -184,11 +184,17 @@ class SandboxManager:
         )
         return result
 
-    def create(self, network: str = "none", memory_mb: int | None = None, cpus: int | None = None) -> str:
+    def create(
+        self,
+        network: str = "none",
+        memory_mb: int | None = None,
+        cpus: int | None = None,
+        image: str | None = None,
+    ) -> str:
         return self._audited(
             "create",
-            {"network": network, "memory_mb": memory_mb, "cpus": cpus},
-            lambda: self._create(network, memory_mb, cpus),
+            {"network": network, "memory_mb": memory_mb, "cpus": cpus, "image": image},
+            lambda: self._create(network, memory_mb, cpus, image),
             lambda sid: {"sandbox_id": sid},
         )
 
@@ -335,6 +341,26 @@ class SandboxManager:
 
     # ---- implementations -------------------------------------------------
 
+    def images(self) -> list[dict[str, Any]]:
+        """The base images a sandbox can start from: the default first, then the others."""
+        described = dict(self._config.images)
+        default = self._config.snapshot
+        choices = [(default, described.get(default) or "The default image.")]
+        choices += [(name, text or "No description.") for name, text in described.items() if name != default]
+        return [{"name": name, "description": text, "default": name == default} for name, text in choices]
+
+    def _pick_image(self, image: str | None) -> str:
+        """The snapshot to clone: the default, or one of the images the user listed. Nothing else."""
+        if image is None or image == "":
+            return self._config.snapshot
+        known = [entry["name"] for entry in self.images()]
+        if not isinstance(image, str) or image not in known:
+            raise SandboxError(
+                f"There is no image named {image!r}. The images are: {', '.join(repr(n) for n in known)}. "
+                "Leave image out for the default (sandbox_images describes them)."
+            )
+        return image
+
     def _resolve_resources(
         self, vmx: Path, memory_mb: int | None, cpus: int | None
     ) -> tuple[int | None, int | None]:
@@ -364,13 +390,16 @@ class SandboxManager:
                 )
         return (memory_mb if memory_mb is not None else base_memory, cpus if cpus is not None else base_cpus)
 
-    def _create(self, network: str, memory_mb: int | None = None, cpus: int | None = None) -> str:
+    def _create(
+        self, network: str, memory_mb: int | None = None, cpus: int | None = None, image: str | None = None
+    ) -> str:
         if network not in NETWORK_MODES:
             raise SandboxError(f"network must be 'none', 'web' or 'nat', got {network!r}.")
         try:
             check_resources(memory_mb, cpus)
         except ValueError as exc:
             raise SandboxError(str(exc)) from None
+        snapshot = self._pick_image(image)
         if network == "web" and not self._config.web_vnet:
             raise SandboxError(
                 "network 'web' is not set up on this computer. Use 'none', or 'nat' if the task needs internet."
@@ -388,6 +417,7 @@ class SandboxManager:
                 )
             sandboxes[sandbox_id] = {
                 "network": network,
+                "image": snapshot,
                 "created_at": self._clock(),
                 "status": "creating",
             }
@@ -401,7 +431,7 @@ class SandboxManager:
         try:
             folder.mkdir()
             (folder / MARKER).write_text("created by vmware-sandbox-mcp\n", encoding="utf-8")
-            self._vmrun.clone(vmx, self._config.snapshot, sandbox_id)
+            self._vmrun.clone(vmx, snapshot, sandbox_id)
             size = self._resolve_resources(vmx, memory_mb, cpus)
             harden_vmx(vmx, self._config.clones_dir, network, self._config.web_vnet, display, memory_mb, cpus)
             self._vmrun.start(vmx)
@@ -920,6 +950,7 @@ class SandboxManager:
                 "network": record.get("network"),
                 "status": record.get("status"),
                 "age_seconds": int(now - record.get("created_at", now)),
+                "image": record.get("image"),
                 "memory_mb": record.get("memory_mb"),
                 "cpus": record.get("cpus"),
                 "checkpoints": [c["name"] for c in record.get("checkpoints", [])],
