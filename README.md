@@ -123,7 +123,9 @@ It verifies the settings, creates one test sandbox, runs a command in it and del
 | `sandbox_copy_in(sandbox_id, host_path, guest_path)` | Copies a file or a whole folder from the transfer folder into the sandbox. |
 | `sandbox_copy_out(sandbox_id, guest_path, host_path)` | Copies a file or a whole folder from the sandbox into the transfer folder. |
 | `sandbox_screenshot(sandbox_id)` | PNG of the sandbox's screen. |
-| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. |\n| `sandbox_scroll(sandbox_id, x, y, direction, amount)` | Turns the mouse wheel at a position, to scroll what is under it. |\n| `sandbox_drag(sandbox_id, from_x, from_y, to_x, to_y, button)` | Drags with the mouse: moves a window, selects text, drags a file. |
+| `sandbox_click(sandbox_id, x, y, button, double)` | Clicks at a pixel position of the screenshot. |
+| `sandbox_scroll(sandbox_id, x, y, direction, amount)` | Turns the mouse wheel at a position, to scroll what is under it. |
+| `sandbox_drag(sandbox_id, from_x, from_y, to_x, to_y, button)` | Drags with the mouse: moves a window, selects text, drags a file. |
 | `sandbox_type(sandbox_id, text)` | Types text on the sandbox's keyboard. |
 | `sandbox_key(sandbox_id, keys)` | Presses a key or shortcut, such as `Return` or `ctrl+c`. |
 | `sandbox_checkpoint(sandbox_id, name)` | Saves the sandbox's disk under a name (about 25 seconds; the sandbox restarts). Up to 5 per sandbox. See [checkpoints](docs/setup.md#checkpoints). |
