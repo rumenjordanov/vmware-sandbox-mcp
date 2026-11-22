@@ -68,6 +68,7 @@ class FakeVmrunProcess:
         self.calls: list[list[str]] = []
         self.running: set[str] = set()
         self.tools_ready = True
+        self.status_lies = False  # the guest works, but checkToolsState keeps saying "installed"
         self.fail: set[str] = set()
         self.guest_files: dict[str, bytes] = {}
         self.ran: list[tuple[str, int]] = []
@@ -175,8 +176,10 @@ class FakeVmrunProcess:
             shutil.rmtree(Path(args[0]).parent, ignore_errors=True)
             return 0, ""
         if command == "checkToolsState":
-            return 0, "running" if self.tools_ready else "installed"
+            return 0, "running" if self.tools_ready and not self.status_lies else "installed"
         if command == "runProgramInGuest":
+            if not self.tools_ready and not self.status_lies:
+                return 255, "Error: The VMware Tools are not running in the virtual machine"
             if self.bad_login:
                 return 255, "Error: Invalid user name or password for the guest OS"
             if args[1] == "/bin/true":

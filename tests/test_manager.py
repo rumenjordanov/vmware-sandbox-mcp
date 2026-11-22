@@ -87,3 +87,24 @@ def test_base_and_neighbour_untouched_by_full_lifecycle(env):
 def test_sandbox_ids_must_match_exactly(env, sandbox_id):
     with pytest.raises(SandboxError, match="not a valid sandbox id"):
         env.manager.destroy(sandbox_id)
+
+
+def test_a_working_guest_is_used_even_if_vmware_keeps_saying_the_tools_are_not_running(env):
+    import dataclasses
+
+    env.manager._config = dataclasses.replace(env.config, boot_timeout_seconds=90)
+    env.fake.status_lies = True
+    started = env.now[0]
+    sandbox_id = env.manager.create()
+    waited = env.now[0] - started
+    assert 30 <= waited < 40                       # it waited for the status first, then asked the guest
+    assert env.manager.run(sandbox_id, "true").exit_code == 0
+
+
+def test_a_guest_whose_tools_really_are_down_still_times_out(env):
+    env.fake.tools_ready = False
+    started = env.now[0]
+    with pytest.raises(SandboxError, match="did not become ready"):
+        env.manager.create()
+    assert env.now[0] - started >= env.config.boot_timeout_seconds
+    assert env.manager.list() == []

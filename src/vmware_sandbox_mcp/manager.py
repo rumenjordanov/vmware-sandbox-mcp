@@ -39,6 +39,7 @@ _ID = re.compile(r"^sbx-[0-9a-f]{8}\Z")
 
 
 FOLDER_TIMEOUT_SECONDS = 600
+TOOLS_STATUS_PATIENCE_SECONDS = 30
 MAX_CHECKPOINTS = 5
 _CHECKPOINT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}\Z")
 JOB_STEP_TIMEOUT_SECONDS = 60
@@ -138,10 +139,14 @@ class SandboxManager:
             sandboxes.pop(sandbox_id, None)
 
     def _wait_ready(self, vmx: Path) -> None:
-        deadline = self._clock() + self._config.boot_timeout_seconds
+        started = self._clock()
+        deadline = started + self._config.boot_timeout_seconds
         rejected = 0
         while self._clock() < deadline:
-            if self._vmrun.tools_running(vmx):
+            # VMware sometimes keeps saying the tools are "installed", not "running", for a guest that
+            # works and answers every command. So after a while, ask the guest itself instead of
+            # trusting that status: a command that runs is the real proof.
+            if self._vmrun.tools_running(vmx) or self._clock() - started >= TOOLS_STATUS_PATIENCE_SECONDS:
                 worked, message = self._vmrun.probe_guest(vmx)
                 if worked:
                     return
