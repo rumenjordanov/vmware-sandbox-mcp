@@ -71,7 +71,9 @@ async def _call(fn: Callable[..., T], *args: Any) -> T:
 
 
 @mcp.tool()
-async def sandbox_create(network: Literal["none", "web", "nat"] = "none") -> str:
+async def sandbox_create(
+    network: Literal["none", "web", "nat"] = "none", memory_mb: int | None = None, cpus: int | None = None
+) -> str:
     """Create a fresh, disposable Linux computer (a "sandbox") and wait until it is ready to use.
 
     Use this before running untrusted code, installing packages, or trying anything you
@@ -88,10 +90,16 @@ async def sandbox_create(network: Literal["none", "web", "nat"] = "none") -> str
     - "nat": full internet access. It can also reach the user's own computer and home
       network, so never use it for code you do not trust.
 
+    memory_mb, cpus: the size of the sandbox. Leave them out for the default size (sandbox_list
+    shows it). Ask for less to leave more of the user's computer free, or for more when a task
+    needs it, such as a large build. The size comes out of the user's own computer and the user
+    limits how much you may ask for: if you ask for too much, the error says the maximum.
+    memory_mb is in megabytes, a multiple of 4, at least 512.
+
     Takes up to a few minutes. Returns the sandbox_id to pass to the other sandbox tools.
     Destroy the sandbox with sandbox_destroy when you are finished.
     """
-    return await _call(lambda: _manager.create(network))  # type: ignore[union-attr]
+    return await _call(lambda: _manager.create(network, memory_mb, cpus))  # type: ignore[union-attr]
 
 
 @mcp.tool()
@@ -333,7 +341,7 @@ async def sandbox_list() -> list[dict[str, Any]]:
     Use this to find a sandbox_id you lost track of, or to check whether old sandboxes
     should be destroyed. Returns one entry per sandbox with its sandbox_id, network mode
     ("none", "web" or "nat"), status ("ready", or "busy" while a checkpoint is being saved
-    or restored), age in seconds, and the names of its checkpoints. Returns an empty list
+    or restored), age in seconds, memory_mb, cpus, and the names of its checkpoints. Returns an empty list
     if there are none.
     """
     return await _call(lambda: _manager.list())  # type: ignore[union-attr]

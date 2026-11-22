@@ -40,6 +40,8 @@ def make_result_tar(stdout: bytes, stderr: bytes, exit_code: int, limit: int = g
 BASE_VMX_TEXT = """.encoding = "UTF-8"
 displayName = "Debian 13.x 64-bit"
 memsize = "2048"
+numvcpus = "2"
+cpuid.coresPerSocket = "2"
 scsi0:0.fileName = "disk.vmdk"
 scsi0:0.present = "TRUE"
 sata0:1.deviceType = "cdrom-image"

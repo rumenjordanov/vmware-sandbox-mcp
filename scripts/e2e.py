@@ -215,6 +215,22 @@ def main() -> int:
               mine[7]["ok"] is False and mine[7]["host_path"] == "../e2e-escape.txt", mine[7])
         sandbox_id = None
 
+        small = client.tool("sandbox_create", memory_mb=1024, cpus=1)
+        check("sandbox_create(memory_mb=1024, cpus=1) succeeds", not small.get("isError"), text(small))
+        sandbox_id = text(small).strip()
+        sized = client.tool("sandbox_run", sandbox_id=sandbox_id, timeout_seconds=30,
+                            command="echo $(nproc) $(awk '/MemTotal/{print $2}' /proc/meminfo)")["structuredContent"]
+        cpus_seen, memory_kb = (int(x) for x in sized["stdout"].split())
+        check("the sandbox really has 1 CPU and about 1 GB", cpus_seen == 1 and 800_000 < memory_kb < 1_100_000, sized)
+        listed = client.tool("sandbox_list")["structuredContent"]["result"]
+        check("sandbox_list shows its size",
+              [(s["memory_mb"], s["cpus"]) for s in listed if s["sandbox_id"] == sandbox_id] == [(1024, 1)], listed)
+        greedy = client.tool("sandbox_create", memory_mb=262144)
+        check("asking for more memory than the base VM has is refused, with the maximum",
+              bool(greedy.get("isError")) and "at most" in text(greedy), text(greedy))
+        client.tool("sandbox_destroy", sandbox_id=sandbox_id)
+        sandbox_id = None
+
         if os.environ.get("VMSANDBOX_REMOTE_INPUT", "").strip().lower() in ("1", "true", "yes", "on"):
             # Written for the tested base VM: Debian 13 with GNOME at 1280x800, where the
             # login screen shows the user in the middle. Adjust the click for another image.

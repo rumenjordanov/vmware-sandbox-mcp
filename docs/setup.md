@@ -2,7 +2,7 @@
 
 Everything needed to go from a fresh VMware Workstation install to an agent using sandboxes. The [README](../README.md) has the short version.
 
-Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Web mode](#web-mode-setup) · [Keyboard and mouse](#keyboard-and-mouse) · [Checkpoints](#checkpoints)
+Contents: [Base VM](#base-vm-setup) · [Check your setup](#check-your-setup) · [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Web mode](#web-mode-setup) · [Keyboard and mouse](#keyboard-and-mouse) · [Checkpoints](#checkpoints) · [Sandbox size](#sandbox-size)
 
 ## Base VM setup
 
@@ -153,3 +153,12 @@ What to know:
 - **Memory is not saved.** VMware can also save a running sandbox's memory, but on the test machine that took over three minutes and 2 GB per checkpoint, so this uses disk-only checkpoints.
 - **While a checkpoint is saved or restored the sandbox is `busy`**, and other calls on it are refused until it is ready again. If saving fails, the sandbox is brought back running; if it cannot be brought back, it is removed and the error says so.
 - Checkpoints are only ever taken of a sandbox, never of the base VM.
+
+## Sandbox size
+
+A sandbox gets the memory and CPUs of the base VM. `sandbox_create` also takes optional `memory_mb` and `cpus`, so an agent can ask for less (to leave more of your computer free, or to run more sandboxes at once) or, if you allow it, for more (a large build).
+
+- **By default an agent can only ask for less.** The most it may ask for is the base VM's own size. To allow more, set `VMSANDBOX_MAX_MEMORY_MB` and `VMSANDBOX_MAX_CPUS`.
+- **The memory and CPUs come out of your computer.** Three sandboxes of 4 GB each are 12 GB of your RAM while they run, next to whatever else you have running. Pick limits with that in mind; the cap on the number of sandboxes (`VMSANDBOX_MAX_SANDBOXES`) still applies.
+- **Values:** memory is in megabytes, a multiple of 4, at least 512; CPUs from 1 to 32. A request over the limit is refused with the maximum in the message, and nothing is left behind. `sandbox_list` shows each sandbox's size.
+- A sandbox keeps its size through checkpoints and restores.

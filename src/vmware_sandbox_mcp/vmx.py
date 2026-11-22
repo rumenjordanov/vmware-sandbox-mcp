@@ -59,6 +59,37 @@ _LINE = re.compile(r'^\s*([^=\s#]+)\s*=\s*"(.*)"\s*$')
 
 _DISPLAY_PASSWORD = re.compile(r"^[A-Za-z0-9]{8}\Z")
 
+MIN_MEMORY_MB, MAX_MEMORY_MB, MAX_CPUS = 512, 1_048_576, 32
+
+
+def check_resources(memory_mb: object, cpus: object) -> None:
+    """Raise ValueError unless the requested size is a plain number VMware can use."""
+    if memory_mb is not None and (
+        isinstance(memory_mb, bool)
+        or not isinstance(memory_mb, int)
+        or not MIN_MEMORY_MB <= memory_mb <= MAX_MEMORY_MB
+        or memory_mb % 4
+    ):
+        raise ValueError(
+            f"memory_mb must be a whole number of megabytes, a multiple of 4, from {MIN_MEMORY_MB} "
+            f"to {MAX_MEMORY_MB}; got {memory_mb!r}."
+        )
+    if cpus is not None and (isinstance(cpus, bool) or not isinstance(cpus, int) or not 1 <= cpus <= MAX_CPUS):
+        raise ValueError(f"cpus must be a whole number from 1 to {MAX_CPUS}; got {cpus!r}.")
+
+
+def vmx_resources(text: str) -> tuple[int | None, int | None]:
+    """(memory in MB, number of CPUs) as a .vmx file states them; None where it does not."""
+    values = {key.lower(): value for key, value in (m.groups() for m in map(_LINE.match, text.splitlines()) if m)}
+
+    def number(key: str) -> int | None:
+        try:
+            return int(values[key])
+        except (KeyError, ValueError):
+            return None
+
+    return number("memsize"), number("numvcpus")
+
 
 def _remote_display(display: tuple[int, str] | None) -> dict[str, str]:
     """Remote display (keyboard and mouse) settings. Off unless a port and password are given.
@@ -82,10 +113,16 @@ def _remote_display(display: tuple[int, str] | None) -> dict[str, str]:
 
 
 def harden_vmx_text(
-    text: str, network: str, vnet: str | None = None, display: tuple[int, str] | None = None
+    text: str,
+    network: str,
+    vnet: str | None = None,
+    display: tuple[int, str] | None = None,
+    memory_mb: int | None = None,
+    cpus: int | None = None,
 ) -> str:
     if network not in NETWORK_MODES:
         raise ValueError(f"network must be one of {NETWORK_MODES}, got {network!r}")
+    check_resources(memory_mb, cpus)
 
     parsed: list[tuple[str, str]] = []
     for line in text.splitlines():
@@ -102,6 +139,10 @@ def harden_vmx_text(
 
     adapter = _NAT if network == "nat" else _web(vnet) if network == "web" else _NO_NETWORK
     settings = {**_ISOLATION, **adapter, **_remote_display(display)}
+    if memory_mb is not None:
+        settings["memsize"] = str(memory_mb)
+    if cpus is not None:
+        settings["numvcpus"] = str(cpus)
     overridden = {key.lower() for key in settings}
 
     kept: list[str] = []
@@ -109,6 +150,8 @@ def harden_vmx_text(
         low = key.lower()
         if low in overridden or low.startswith(_DROP_PREFIXES):
             continue
+        if cpus is not None and low == "cpuid.corespersocket":
+            continue  # a core count that no longer divides the new CPU count would stop the VM starting
         if low.rsplit(".", 1)[0] in cdroms:
             continue
         kept.append(f'{key} = "{value}"')
@@ -122,9 +165,19 @@ def harden_vmx(
     network: str,
     vnet: str | None = None,
     display: tuple[int, str] | None = None,
+    memory_mb: int | None = None,
+    cpus: int | None = None,
 ) -> None:
     path = resolve(vmx)
     if not same_path(path.parent.parent, clones_dir) or path.suffix.lower() != ".vmx":
         raise PermissionError(f"Refused to edit {vmx}: not a sandbox .vmx inside {clones_dir}.")
     text = Path(path).read_text(encoding="utf-8")
-    Path(path).write_text(harden_vmx_text(text, network, vnet, display), encoding="utf-8")
+    Path(path).write_text(harden_vmx_text(text, network, vnet, display, memory_mb, cpus), encoding="utf-8")
+
+
+def read_vmx_resources(vmx: str | os.PathLike[str], clones_dir: str | os.PathLike[str]) -> tuple[int | None, int | None]:
+    """The size a sandbox's .vmx states (it carries the base VM's size right after cloning)."""
+    path = resolve(vmx)
+    if not same_path(path.parent.parent, clones_dir) or path.suffix.lower() != ".vmx":
+        raise PermissionError(f"Refused to read {vmx}: not a sandbox .vmx inside {clones_dir}.")
+    return vmx_resources(Path(path).read_text(encoding="utf-8"))

@@ -28,7 +28,7 @@ from .paths import TransferPathError, resolve_in_transfer, same_path
 from .state import StateStore
 from .guest_run import RunResult, build_script, parse_result
 from .vmrun import VmrunClient, VmrunError, VmrunTimeout
-from .vmx import NETWORK_MODES, harden_vmx
+from .vmx import NETWORK_MODES, check_resources, harden_vmx, read_vmx_resources
 
 log = logging.getLogger("vmware_sandbox_mcp")
 T = TypeVar("T")
@@ -179,9 +179,12 @@ class SandboxManager:
         )
         return result
 
-    def create(self, network: str = "none") -> str:
+    def create(self, network: str = "none", memory_mb: int | None = None, cpus: int | None = None) -> str:
         return self._audited(
-            "create", {"network": network}, lambda: self._create(network), lambda sid: {"sandbox_id": sid}
+            "create",
+            {"network": network, "memory_mb": memory_mb, "cpus": cpus},
+            lambda: self._create(network, memory_mb, cpus),
+            lambda sid: {"sandbox_id": sid},
         )
 
     def destroy(self, sandbox_id: str) -> None:
@@ -305,9 +308,42 @@ class SandboxManager:
 
     # ---- implementations -------------------------------------------------
 
-    def _create(self, network: str) -> str:
+    def _resolve_resources(
+        self, vmx: Path, memory_mb: int | None, cpus: int | None
+    ) -> tuple[int | None, int | None]:
+        """Check a size request against the limits and return the size the sandbox will have.
+
+        The limit is what the user configured, or else the size of the base VM, so by default an
+        agent can ask for less than the base VM but never for more. The clone's own .vmx gives
+        the base size, because that is what it was just created with.
+        """
+        base_memory, base_cpus = read_vmx_resources(vmx, self._config.clones_dir)
+        for label, wanted, base, configured in (
+            ("memory_mb", memory_mb, base_memory, self._config.max_memory_mb),
+            ("cpus", cpus, base_cpus, self._config.max_cpus),
+        ):
+            if wanted is None:
+                continue
+            limit = configured if configured is not None else base
+            if limit is None:
+                raise SandboxError(
+                    f"{label} cannot be changed: the size of the base VM could not be read and the user "
+                    "has not set a maximum."
+                )
+            if wanted > limit:
+                raise SandboxError(
+                    f"{label} can be at most {limit} on this computer, and {wanted} was asked for. "
+                    "Ask for less, or leave it out for the default size."
+                )
+        return (memory_mb if memory_mb is not None else base_memory, cpus if cpus is not None else base_cpus)
+
+    def _create(self, network: str, memory_mb: int | None = None, cpus: int | None = None) -> str:
         if network not in NETWORK_MODES:
             raise SandboxError(f"network must be 'none', 'web' or 'nat', got {network!r}.")
+        try:
+            check_resources(memory_mb, cpus)
+        except ValueError as exc:
+            raise SandboxError(str(exc)) from None
         if network == "web" and not self._config.web_vnet:
             raise SandboxError(
                 "network 'web' is not set up on this computer. Use 'none', or 'nat' if the task needs internet."
@@ -339,7 +375,8 @@ class SandboxManager:
             folder.mkdir()
             (folder / MARKER).write_text("created by vmware-sandbox-mcp\n", encoding="utf-8")
             self._vmrun.clone(vmx, self._config.snapshot, sandbox_id)
-            harden_vmx(vmx, self._config.clones_dir, network, self._config.web_vnet, display)
+            size = self._resolve_resources(vmx, memory_mb, cpus)
+            harden_vmx(vmx, self._config.clones_dir, network, self._config.web_vnet, display, memory_mb, cpus)
             self._vmrun.start(vmx)
             self._wait_ready(vmx)
         except Exception as exc:
@@ -354,6 +391,7 @@ class SandboxManager:
         with self._store.edit() as sandboxes:
             if sandbox_id in sandboxes:
                 sandboxes[sandbox_id]["status"] = "ready"
+                sandboxes[sandbox_id]["memory_mb"], sandboxes[sandbox_id]["cpus"] = size
         return sandbox_id
 
     def _destroy(self, sandbox_id: str) -> None:
@@ -855,6 +893,8 @@ class SandboxManager:
                 "network": record.get("network"),
                 "status": record.get("status"),
                 "age_seconds": int(now - record.get("created_at", now)),
+                "memory_mb": record.get("memory_mb"),
+                "cpus": record.get("cpus"),
                 "checkpoints": [c["name"] for c in record.get("checkpoints", [])],
             }
             for sandbox_id, record in sorted(self._store.all().items())

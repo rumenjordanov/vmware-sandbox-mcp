@@ -35,6 +35,8 @@ class Config:
     max_sandboxes: int = 3
     max_age_minutes: int = 120
     boot_timeout_seconds: int = 180
+    max_memory_mb: int | None = None  # the most an agent may ask for; None means the base VM's own size
+    max_cpus: int | None = None
     audit_log: Path | None = None
     # network="web": private VMware network + filtering proxy. Off unless both are set.
     web_vnet: str | None = None
@@ -62,6 +64,19 @@ def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
         raise ConfigError(f"{name} must be a whole number, got {raw!r}.") from None
     if value < 1:
         raise ConfigError(f"{name} must be at least 1.")
+    return value
+
+
+def _optional_int(env: Mapping[str, str], name: str, minimum: int, maximum: int) -> int | None:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be a whole number, got {raw!r}.") from None
+    if not minimum <= value <= maximum:
+        raise ConfigError(f"{name} must be from {minimum} to {maximum}.")
     return value
 
 
@@ -198,6 +213,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         max_sandboxes=_positive_int(env, "VMSANDBOX_MAX_SANDBOXES", 3),
         max_age_minutes=_positive_int(env, "VMSANDBOX_MAX_AGE_MINUTES", 120),
         boot_timeout_seconds=_positive_int(env, "VMSANDBOX_BOOT_TIMEOUT_SECONDS", 180),
+        max_memory_mb=_optional_int(env, "VMSANDBOX_MAX_MEMORY_MB", 512, 1_048_576),
+        max_cpus=_optional_int(env, "VMSANDBOX_MAX_CPUS", 1, 32),
         audit_log=audit_log,
         remote_input=_switch(env, "VMSANDBOX_REMOTE_INPUT"),
         **_web_settings(env),  # type: ignore[arg-type]

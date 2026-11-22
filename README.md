@@ -114,7 +114,7 @@ It verifies the settings, creates one test sandbox, runs a command in it and del
 
 | Tool | What it does |
 |---|---|
-| `sandbox_create(network)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"`. Returns a `sandbox_id`. |
+| `sandbox_create(network, memory_mb, cpus)` | New sandbox from the clean snapshot. `network` is `"none"` (default), `"web"` or `"nat"`. `memory_mb` and `cpus` are optional: smaller than the base VM by default, never larger than you allow. Returns a `sandbox_id`. |
 | `sandbox_run(sandbox_id, command, timeout_seconds)` | Runs a bash command. Returns stdout, stderr, exit code, and whether it timed out. |
 | `sandbox_start(sandbox_id, command)` | Starts a command that keeps running in the background (a server, a long build). Returns a `job_id` at once. |
 | `sandbox_check(sandbox_id, job_id)` | Whether a background command is running, exited or stopped, its exit code, and its output so far. |
@@ -169,6 +169,8 @@ All configuration is through environment variables. If a required one is missing
 | `VMSANDBOX_GUEST_USER` | yes | | Login name inside the base VM. |
 | `VMSANDBOX_GUEST_PASSWORD` | yes | | Password for that login. |
 | `VMSANDBOX_MAX_SANDBOXES` | no | `3` | Maximum sandboxes existing at once. |
+| `VMSANDBOX_MAX_MEMORY_MB` | no | the base VM's memory | The most memory an agent may ask for when it creates a sandbox. |
+| `VMSANDBOX_MAX_CPUS` | no | the base VM's CPUs | The most CPUs an agent may ask for. |
 | `VMSANDBOX_MAX_AGE_MINUTES` | no | `120` | Sandboxes older than this are destroyed automatically. |
 | `VMSANDBOX_BOOT_TIMEOUT_SECONDS` | no | `180` | How long `sandbox_create` waits for the guest to become ready. |
 | `VMSANDBOX_VMRUN_PATH` | no | auto-detected | Full path of `vmrun` if it is not in the standard location. |
