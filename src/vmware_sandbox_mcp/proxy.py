@@ -43,6 +43,60 @@ _HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?\Z")
 _HOP_HEADERS = (b"proxy-connection", b"proxy-authorization", b"connection", b"keep-alive")
 
 
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_ALLOW_ENTRY = re.compile(rf"^(\*\.)?{_LABEL}(?:\.{_LABEL})+\Z")
+MAX_ALLOWED_HOSTS = 200
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def parse_allowed_hosts(text: str) -> tuple[str, ...]:
+    """A comma or space separated list of sites -> normalised entries. Raises ValueError.
+
+    An entry is a site name such as "pypi.org" (that site only) or "*.debian.org" (any
+    sub-domain, not the bare name: list both if both are needed). Case does not matter.
+    """
+    entries: list[str] = []
+    for raw in re.split(r"[,\s]+", text.strip()):
+        if not raw:
+            continue
+        entry = raw.lower().rstrip(".")
+        if not _ALLOW_ENTRY.match(entry):
+            raise ValueError(
+                f"{raw!r} is not a site name. Use names such as pypi.org or *.debian.org, "
+                "without http://, ports or paths."
+            )
+        if _is_ip(entry):
+            raise ValueError(f"{raw!r} is a numeric address; list site names instead.")
+        if entry.startswith("*.") and "." not in entry[2:]:
+            raise ValueError(f"{raw!r} would allow a whole top-level domain; name the site, like *.example.com.")
+        if entry not in entries:
+            entries.append(entry)
+    if not entries:
+        raise ValueError("the list of sites is empty.")
+    if len(entries) > MAX_ALLOWED_HOSTS:
+        raise ValueError(f"at most {MAX_ALLOWED_HOSTS} sites can be listed.")
+    return tuple(entries)
+
+
+def host_allowed(host: str, allowed: Iterable[str]) -> bool:
+    """True if a requested site name is on the list (exact, or under a *.name entry)."""
+    name = host.lower().rstrip(".")
+    for entry in allowed:
+        if entry.startswith("*."):
+            if name.endswith(entry[1:]) and len(name) > len(entry) - 1:
+                return True
+        elif name == entry:
+            return True
+    return False
+
+
 class Denied(Exception):
     """The request is refused by policy. The message is shown to the sandbox."""
 
@@ -163,9 +217,12 @@ class WebProxy:
         *,
         allow: Callable[[IPAddress], bool] | None = None,
         resolver: Resolver = _system_resolver,
+        allowed_hosts: Iterable[str] | None = None,
     ) -> None:
         self._host, self._port = host, port
         self._allowed_ports = frozenset(allowed_ports)
+        # None: any public site. Otherwise only these names; the address checks still apply on top.
+        self._allowed_hosts = None if allowed_hosts is None else parse_allowed_hosts(",".join(allowed_hosts))
         self._audit = audit or AuditLog(None)
         if allow is None:
             local = host_addresses() | {ipaddress.ip_address(host)}
@@ -253,11 +310,15 @@ class WebProxy:
         if literal is None:
             if not _HOSTNAME.match(host):
                 raise BadRequest("bad host name")
+            if self._allowed_hosts is not None and not host_allowed(host, self._allowed_hosts):
+                raise Denied(f"{host} is not on the list of sites this sandbox may reach")
             try:
                 candidates = await asyncio.wait_for(self._resolver(host, port), CONNECT_TIMEOUT_SECONDS)
             except (OSError, asyncio.TimeoutError):
                 raise Denied(f"could not resolve {host}") from None
         else:
+            if self._allowed_hosts is not None:
+                raise Denied("only the sites on the user's list can be reached, not numeric addresses")
             candidates = [str(literal)]
         for candidate in candidates:
             try:

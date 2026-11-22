@@ -37,7 +37,8 @@ ask() { # name url host -> name=<http status>, or name=refused when the proxy it
 port() {
   if timeout 3 bash -c "exec 3<>/dev/tcp/$H/$1" 2>/dev/null; then echo "port$1=open"; else echo "port$1=closed"; fi
 }
-ask public http://example.com/ example.com
+ask public http://__PUBLIC__/ __PUBLIC__
+ask unlisted http://allowlist-check.invalid/ allowlist-check.invalid
 ask private http://10.0.0.1/ 10.0.0.1
 ask hostself "http://$H/" "$H"
 ask badport http://example.com:22/ example.com
@@ -84,6 +85,7 @@ class Doctor:
                 config.web_proxy_port,
                 config.web_ports,
                 AuditLog(config.audit_log),
+                allowed_hosts=config.web_allow,
             )
         )
         self._env, self._boot, self._runner = env, boot, runner
@@ -255,8 +257,10 @@ class Doctor:
                 self._report(FAIL, "Web sandbox", str(exc))
                 return
             try:
-                probe = _WEB_PROBE.replace("__H__", config.web_proxy_host or "").replace(
-                    "__P__", str(config.web_proxy_port)
+                probe = (
+                    _WEB_PROBE.replace("__H__", config.web_proxy_host or "")
+                    .replace("__P__", str(config.web_proxy_port))
+                    .replace("__PUBLIC__", self._public_host(config) or "example.com")
                 )
                 self._sleep(5)  # give the guest a moment to get its network address
                 result = manager.run(sandbox_id, probe, 180)
@@ -272,6 +276,13 @@ class Doctor:
             if proxy is not None:
                 proxy.stop()
 
+    @staticmethod
+    def _public_host(config: Config) -> str | None:
+        """The site to try: example.com normally, or the first plainly named site on the list."""
+        if config.web_allow is None:
+            return "example.com"
+        return next((entry for entry in config.web_allow if not entry.startswith("*.")), None)
+
     def _judge_web(self, seen: dict[str, str], config: Config) -> None:
         setup = "run scripts\\setup-web-network.ps1 as administrator (see docs/setup.md)."
         if seen.get(f"port{config.web_proxy_port}") != "open":
@@ -284,16 +295,31 @@ class Doctor:
             return
         self._report(OK, "Web sandbox reaches the proxy")
 
+        public_host = self._public_host(config)
         public = seen.get("public", "")
-        if public[:1] in ("2", "3"):
-            self._report(OK, "Web access through the proxy", f"example.com answered {public}")
+        if public_host is None:
+            self._report(SKIP, "Web access through the proxy", "the site list has only wildcard entries, so no site was tried")
+        elif public[:1] in ("2", "3"):
+            self._report(OK, "Web access through the proxy", f"{public_host} answered {public}")
         else:
             self._report(
                 FAIL,
                 "Web access through the proxy",
-                f"example.com answered {public or 'nothing'}",
-                "check this computer's own internet connection.",
+                f"{public_host} answered {public or 'nothing'}",
+                "check this computer's own internet connection"
+                + (" and that the site is really on VMSANDBOX_WEB_ALLOW." if config.web_allow else "."),
             )
+
+        if config.web_allow is not None:
+            if seen.get("unlisted") == "refused":
+                self._report(OK, "Site list", f"sites not on the list are refused ({len(config.web_allow)} listed)")
+            else:
+                self._report(
+                    FAIL,
+                    "Site list",
+                    "a site that is not on VMSANDBOX_WEB_ALLOW was not refused",
+                    "this is a bug in the proxy; do not rely on the list.",
+                )
 
         refused = {name: seen.get(name, "") for name in ("private", "hostself", "badport")}
         if all(answer == "refused" for answer in refused.values()):

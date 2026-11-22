@@ -170,3 +170,30 @@ def test_other_sandboxes_get_no_proxy_variables(web, network):
 def test_exported_values_are_shell_quoted():
     script = guest_run.build_script("true", {"X": "a b'c;$(id)"}).decode()
     assert "export X='a b'\"'\"'c;$(id)'\n" in script
+
+
+# ---- the list of allowed sites ---------------------------------------------
+
+def test_no_list_means_any_public_site(settings):
+    assert load_config(settings).web_allow is None
+    settings["VMSANDBOX_WEB_ALLOW"] = "   "
+    assert load_config(settings).web_allow is None
+
+
+def test_the_list_is_read_and_normalised(settings):
+    settings["VMSANDBOX_WEB_ALLOW"] = "PyPI.org, files.pythonhosted.org *.Debian.org pypi.org"
+    assert load_config(settings).web_allow == ("pypi.org", "files.pythonhosted.org", "*.debian.org")
+
+
+@pytest.mark.parametrize("value", ["http://pypi.org", "pypi.org:443", "*.com", "1.2.3.4", "bad host!", "*"])
+def test_a_bad_list_is_refused_naming_the_setting(settings, value):
+    settings["VMSANDBOX_WEB_ALLOW"] = value
+    with pytest.raises(ConfigError, match="VMSANDBOX_WEB_ALLOW"):
+        load_config(settings)
+
+
+def test_a_list_without_web_mode_is_an_error_not_a_silent_no_op(settings):
+    del settings["VMSANDBOX_WEB_VNET"], settings["VMSANDBOX_WEB_PROXY_HOST"]
+    settings["VMSANDBOX_WEB_ALLOW"] = "pypi.org"
+    with pytest.raises(ConfigError, match="only applies when web mode is set up"):
+        load_config(settings)

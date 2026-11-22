@@ -268,3 +268,100 @@ def test_second_proxy_on_the_same_port_fails_to_start(make_proxy):
     second = WebProxy("127.0.0.1", first.port)
     with pytest.raises(OSError):
         second.start()
+
+
+# ---- a list of allowed sites -----------------------------------------------
+
+from vmware_sandbox_mcp.proxy import host_allowed, parse_allowed_hosts  # noqa: E402
+
+
+def test_the_list_is_normalised():
+    assert parse_allowed_hosts("PyPI.org, files.pythonhosted.org  *.Debian.org pypi.org. ,") == (
+        "pypi.org", "files.pythonhosted.org", "*.debian.org")
+
+
+@pytest.mark.parametrize("text", [
+    "", "  ", ",", "http://pypi.org", "pypi.org:443", "pypi.org/simple", "localhost", "*", "*.com", "*.", "a b!",
+    "pypi..org", "-bad.org", "bad-.org", "*.*.org", "\u00fcn\u00ef.org", "1.2.3.4", "::1", "pypi.org;rm", "x" * 64 + ".org",
+    "ok.org, http://bad.org",
+])
+def test_bad_lists_are_refused(text):
+    with pytest.raises(ValueError):
+        parse_allowed_hosts(text)
+
+
+def test_the_list_has_a_size_limit():
+    with pytest.raises(ValueError, match="at most"):
+        parse_allowed_hosts(",".join(f"site{i}.example" for i in range(201)))
+    assert len(parse_allowed_hosts(",".join(f"site{i}.example" for i in range(200)))) == 200
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("pypi.org", True), ("PYPI.ORG", True), ("pypi.org.", True), ("www.pypi.org", False), ("xpypi.org", False),
+    ("pypi.org.evil.example", False), ("evilpypi.org", False), ("a.cdn.example", True), ("a.b.cdn.example", True),
+    ("cdn.example", False), ("notcdn.example", False), ("cdn.example.evil.com", False), ("", False),
+])
+def test_matching_is_exact_or_wildcard_below_a_name(host, expected):
+    assert host_allowed(host, ("pypi.org", "*.cdn.example")) is expected
+
+
+def test_the_proxy_refuses_a_bad_list_at_construction():
+    with pytest.raises(ValueError):
+        WebProxy("127.0.0.1", 0, allowed_hosts=["bad host name"])
+
+
+def test_only_listed_sites_are_forwarded(upstream, make_proxy):
+    target = upstream(_HttpHandler)
+    proxy = make_proxy(allow=lambda ip: True, allowed_ports=[target], resolver=_to_loopback,
+                       allowed_hosts=["files.example", "*.cdn.example"])
+
+    def status(host):
+        reply = exchange(proxy.port, f"GET http://{host}:{target}/ HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+        return reply.split(b"\r\n", 1)[0], reply
+
+    assert status("files.example")[0].startswith(b"HTTP/1.1 200")
+    assert status("FILES.example")[0].startswith(b"HTTP/1.1 200")              # case does not matter
+    assert status("a.cdn.example")[0].startswith(b"HTTP/1.1 200")
+    for refused in ("other.example", "cdn.example", "files.example.evil.example", "xfiles.example"):
+        line, reply = status(refused)
+        assert line.startswith(b"HTTP/1.1 403"), refused
+        assert b"not on the list" in reply
+    entry = make_proxy.audit()[-1]
+    assert entry["ok"] is False and "not on the list" in entry["error"]
+
+
+def test_the_same_rules_apply_to_tunnels(upstream, make_proxy):
+    target = upstream(_EchoHandler)
+    proxy = make_proxy(allow=lambda ip: True, allowed_ports=[target], resolver=_to_loopback,
+                       allowed_hosts=["files.example"])
+    ok = exchange(proxy.port, f"CONNECT files.example:{target} HTTP/1.1\r\n\r\n".encode(), then=b"hi")
+    assert ok == b"HTTP/1.1 200 Connection established\r\n\r\nHI"
+    assert exchange(proxy.port, f"CONNECT other.example:{target} HTTP/1.1\r\n\r\n".encode()).startswith(b"HTTP/1.1 403")
+
+
+def test_numeric_addresses_are_refused_when_there_is_a_list(upstream, make_proxy):
+    target = upstream(_EchoHandler)
+    proxy = make_proxy(allow=lambda ip: True, allowed_ports=[target], allowed_hosts=["files.example"])
+    reply = exchange(proxy.port, f"CONNECT 127.0.0.1:{target} HTTP/1.1\r\n\r\n".encode())
+    assert reply.startswith(b"HTTP/1.1 403") and b"numeric addresses" in reply
+
+
+def test_a_listed_name_still_has_to_resolve_to_a_public_address(make_proxy):
+    async def private(host, port):
+        return ["192.168.0.1"]
+
+    proxy = make_proxy(allowed_hosts=["innocent.example"], resolver=private)    # the real address policy
+    reply = exchange(proxy.port, b"GET http://innocent.example/ HTTP/1.1\r\n\r\n")
+    assert reply.startswith(b"HTTP/1.1 403") and b"not a public internet address" in reply
+
+
+def test_the_port_rule_comes_first(make_proxy):
+    proxy = make_proxy(allow=lambda ip: True, allowed_hosts=["files.example"])
+    reply = exchange(proxy.port, b"CONNECT files.example:22 HTTP/1.1\r\n\r\n")
+    assert reply.startswith(b"HTTP/1.1 403") and b"port 22 is not allowed" in reply
+
+
+def test_without_a_list_nothing_changes(upstream, make_proxy):
+    target = upstream(_HttpHandler)
+    proxy = make_proxy(allow=lambda ip: True, allowed_ports=[target], resolver=_to_loopback)
+    assert exchange(proxy.port, f"GET http://anything.example:{target}/ HTTP/1.1\r\n\r\n".encode()).startswith(b"HTTP/1.1 200")

@@ -166,6 +166,7 @@ def test_create_reports_rejected_login_quickly(env):
 GOOD_WEB = {
     "public": "200", "private": "refused", "hostself": "refused", "badport": "refused",
     "port135": "closed", "port139": "closed", "port445": "closed", "port3128": "open", "route": "no",
+    "unlisted": "refused",
 }
 
 
@@ -255,6 +256,41 @@ def test_proxy_already_served_by_a_running_server_is_fine(webdoc):
     webdoc.proxy = FakeProxy(OSError(10048, "address already in use"))
     code, results = webdoc.run_web()
     assert code == 0 and results["Web proxy"] == "OK"
+
+
+def test_the_site_list_is_checked_and_a_listed_site_is_the_one_tried(webdoc):
+    webdoc.settings["VMSANDBOX_WEB_ALLOW"] = "*.debian.org, pypi.org"
+    code, results = webdoc.run_web()
+    assert code == 0 and results["Site list"] == "OK" and results["Web access through the proxy"] == "OK"
+    probe = next(script for script, _ in webdoc.fake.ran if "ask public" in script)
+    assert "ask public http://pypi.org/ pypi.org" in probe          # not example.com, which is not listed
+    assert "allowlist-check.invalid" in probe
+
+
+def test_a_site_that_is_not_on_the_list_but_got_through_is_a_failure(webdoc):
+    webdoc.settings["VMSANDBOX_WEB_ALLOW"] = "pypi.org"
+    code, results = webdoc.run_web(unlisted="200")
+    assert code == 1 and results["Site list"] == "FAIL"
+
+
+def test_a_list_of_only_wildcards_skips_the_site_to_try(webdoc):
+    webdoc.settings["VMSANDBOX_WEB_ALLOW"] = "*.debian.org"
+    code, results = webdoc.run_web()
+    assert code == 0 and results["Web access through the proxy"] == "SKIP" and results["Site list"] == "OK"
+
+
+def test_without_a_list_there_is_no_site_list_check_and_example_com_is_tried(webdoc):
+    code, results = webdoc.run_web()
+    assert "Site list" not in results
+    assert any("ask public http://example.com/ example.com" in script for script, _ in webdoc.fake.ran)
+
+
+def test_the_doctors_proxy_gets_the_list(webdoc):
+    webdoc.settings["VMSANDBOX_WEB_ALLOW"] = "pypi.org"
+    seen = []
+    webdoc.fake.next_result = (b"doctor-ok\nsudo-no\n" + "".join(f"{k}={v}\n" for k, v in GOOD_WEB.items()).encode(), b"", 0)
+    webdoc.run(proxy_factory=lambda config: (seen.append(config.web_allow), webdoc.proxy)[1])
+    assert seen == [("pypi.org",)]
 
 
 def test_cli_dispatches_to_doctor(monkeypatch):

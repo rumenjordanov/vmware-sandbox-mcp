@@ -180,6 +180,7 @@ All configuration is through environment variables. If a required one is missing
 | `VMSANDBOX_WEB_PROXY_HOST` | no | | This computer's IP address on that network. The proxy listens only there. |
 | `VMSANDBOX_WEB_PROXY_PORT` | no | `3128` | Port the proxy listens on. |
 | `VMSANDBOX_WEB_PORTS` | no | `80,443` | Destination ports `web` sandboxes may connect to. |
+| `VMSANDBOX_WEB_ALLOW` | no | any public site | Comma-separated sites `web` sandboxes may reach, for example `pypi.org, *.debian.org`. See [allowing only some sites](docs/setup.md#allowing-only-some-sites). |
 
 The clones folder, the transfer folder and the base VM folder must not overlap; the server checks this at startup.
 
@@ -192,7 +193,7 @@ The short version of what is enforced in code and covered by tests:
 - **Only its own VMs.** Every VMware call goes through one wrapper with a command allowlist and a path check. The base VM can only be read and cloned from, never started, changed or deleted.
 - **Only what it marked gets deleted.** A folder is removed only if the server created and marked it.
 - **Isolated before first boot.** Shared folders, clipboard, drag-and-drop, USB, CD-ROM and sound are removed from every clone.
-- **No network unless asked for**, and `web` mode refuses private addresses, the host's own addresses and non-web ports.
+- **No network unless asked for**, and `web` mode refuses private addresses, the host's own addresses and non-web ports. It can also be limited to a list of sites you name.
 - **One transfer folder.** File copies cannot leave it: path traversal, links and hostile archives are rejected.
 - **No host shell.** Agent-supplied text is never placed on a command line, on the host or in the sandbox.
 - **Limits.** Timeouts on every command, a cap on sandboxes, automatic removal of old and orphaned ones.
@@ -208,7 +209,7 @@ Version 0.1. It works and is tested, and it is young.
 - **Tested on one setup:** Windows 11, VMware Workstation 25H2, Debian 13 guest.
 - **Not on PyPI yet.**
 - **Keyboard and mouse** assume a US keyboard layout.
-- **Planned:** isolating `web` sandboxes from each other, a site allowlist for `web` mode, a PyPI release.
+- **Planned:** isolating `web` sandboxes from each other, a PyPI release.
 
 Bug reports and pull requests are welcome. If this is useful to you, a star helps other people find it.
 

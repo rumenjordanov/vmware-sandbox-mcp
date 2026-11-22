@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .paths import is_within, overlaps, resolve, same_path
+from .proxy import parse_allowed_hosts
 
 _VMRUN_CANDIDATES = (
     r"C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe",
@@ -43,6 +44,7 @@ class Config:
     web_proxy_host: str | None = None
     web_proxy_port: int = 3128
     web_ports: tuple[int, ...] = (80, 443)
+    web_allow: tuple[str, ...] | None = None  # None: any public site
     # Keyboard and mouse tools: gives every sandbox a password-protected remote display on 127.0.0.1.
     remote_input: bool = False
 
@@ -127,7 +129,13 @@ def vnet_problem(vnet: str) -> str | None:
 def _web_settings(env: Mapping[str, str]) -> dict[str, object]:
     vnet = env.get("VMSANDBOX_WEB_VNET", "").strip()
     host = env.get("VMSANDBOX_WEB_PROXY_HOST", "").strip()
+    allow_raw = env.get("VMSANDBOX_WEB_ALLOW", "").strip()
     if not vnet and not host:
+        if allow_raw:
+            raise ConfigError(
+                "VMSANDBOX_WEB_ALLOW only applies when web mode is set up "
+                "(VMSANDBOX_WEB_VNET and VMSANDBOX_WEB_PROXY_HOST)."
+            )
         return {}
     if not vnet or not host:
         raise ConfigError("VMSANDBOX_WEB_VNET and VMSANDBOX_WEB_PROXY_HOST must be set together.")
@@ -163,7 +171,19 @@ def _web_settings(env: Mapping[str, str]) -> dict[str, object]:
         ports = ()
     if not ports or any(not 1 <= p <= 65535 for p in ports):
         raise ConfigError("VMSANDBOX_WEB_PORTS must be a comma-separated list of port numbers, like 80,443.")
-    return {"web_vnet": vnet, "web_proxy_host": str(address), "web_proxy_port": port, "web_ports": ports}
+    web_allow = None
+    if allow_raw:
+        try:
+            web_allow = parse_allowed_hosts(allow_raw)
+        except ValueError as exc:
+            raise ConfigError(f"VMSANDBOX_WEB_ALLOW: {exc}") from None
+    return {
+        "web_vnet": vnet,
+        "web_proxy_host": str(address),
+        "web_proxy_port": port,
+        "web_ports": ports,
+        "web_allow": web_allow,
+    }
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:

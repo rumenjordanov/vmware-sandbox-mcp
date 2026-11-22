@@ -122,6 +122,24 @@ Setup, once, with administrator rights:
 
 The server refuses to work with `web` mode set to VMnet0 (bridged), VMnet1 or VMnet8 (NAT), or to any network that VMware records as NAT: it reports the setting as wrong and creates no sandboxes.
 
+### Allowing only some sites
+
+By default a `web` sandbox can reach any public website. To limit it, set `VMSANDBOX_WEB_ALLOW` to a comma-separated list of sites:
+
+```
+VMSANDBOX_WEB_ALLOW=pypi.org, files.pythonhosted.org, *.debian.org, github.com
+```
+
+- **`pypi.org`** allows that site only. **`*.debian.org`** allows every site below it (such as `deb.debian.org`) but not `debian.org` itself; list both if you need both. Case does not matter. Write plain names: no `http://`, no ports, no paths.
+- **Everything else is refused** with a message that says the site is not on the list, so the agent sees why. Numeric addresses are refused too.
+- **The address rules still apply** to listed sites: a listed name that points at a private address is refused.
+- **Redirects are new requests.** A download that redirects to another host needs that host on the list too. GitHub downloads, for example, usually redirect to `codeload.github.com` or `objects.githubusercontent.com`, and pip needs `files.pythonhosted.org` next to `pypi.org`. If something fails, the proxy's lines in the audit log show which host was refused.
+- **A wildcard over a whole top-level domain** such as `*.com` is refused. The check cannot tell public suffixes like `co.uk` from sites, so `*.co.uk` would allow all of them: name the sites instead.
+- **Without web mode the setting is an error**, not a silent no-op, so a limit you think you have is never missing.
+- `vmware-sandbox-mcp doctor` tries a listed site and checks from inside a sandbox that a site that is not listed is refused.
+
+Tested here: `example.com` and `apt-get update` through `*.debian.org`, with pypi.org, another plain-http site and a numeric address refused. The other host names above are the usual ones for those services; check them against the audit log for your own use.
+
 ## Keyboard and mouse
 
 Off by default. With `VMSANDBOX_REMOTE_INPUT=on`, the agent can operate graphical programs: it looks with `sandbox_screenshot` and acts with `sandbox_click`, `sandbox_scroll`, `sandbox_drag`, `sandbox_type` and `sandbox_key`. No change to the base VM and no admin rights are needed.

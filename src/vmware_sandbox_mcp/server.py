@@ -86,7 +86,8 @@ async def sandbox_create(
       own computer and home network stay unreachable. Prefer this. Standard tools (curl,
       wget, pip, git over https) work as usual; with sudo use `sudo -E`, for example
       `sudo -E apt-get -y install <package>`. ping and non-web protocols do not work.
-      It may not be set up on this computer; the error will say so.
+      The user may allow only some sites: a request to any other site fails with a message
+      saying it is not on the list. It may not be set up on this computer; the error says so.
     - "nat": full internet access. It can also reach the user's own computer and home
       network, so never use it for code you do not trust.
 
@@ -423,7 +424,11 @@ def main() -> None:
     config = _manager.config
     if config.web_vnet and config.web_proxy_host:
         WebProxy(
-            config.web_proxy_host, config.web_proxy_port, config.web_ports, AuditLog(config.audit_log)
+            config.web_proxy_host,
+            config.web_proxy_port,
+            config.web_ports,
+            AuditLog(config.audit_log),
+            allowed_hosts=config.web_allow,
         ).start_with_retry()
     mcp.run()
 
